@@ -1,0 +1,10 @@
+.work/
+__pycache__/
+scripts/__pycache__/
+results/
+certs/*.pem
+certs/*.key
+certs/*.csr
+certs/*.srl
+nginx-runtime/
+!configs/*.json

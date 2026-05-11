@@ -1,0 +1,14 @@
+{
+  "listen": "127.0.0.1",
+  "listenPort": 4433,
+  "cert": "certs/cert.pem",
+  "key": "certs/key.pem",
+  "serverName": "bench.local",
+  "users": [
+    {
+      "username": "bench",
+      "password": "bench"
+    }
+  ],
+  "listenQuic": true
+}

@@ -1,0 +1,16 @@
+# TrustTunnelClient (rust) config — SOCKS5 listener mode.
+# upstream_protocol is patched in-place by run-pair.sh to "http2" or "http3".
+loglevel = "info"
+vpn_mode = "general"
+killswitch_enabled = false
+
+[endpoint]
+hostname = "bench.local"
+addresses = ["127.0.0.1:4433"]
+username = "bench"
+password = "bench"
+skip_verification = true
+upstream_protocol = "http2"
+
+[listener.socks]
+address = "127.0.0.1:1080"

@@ -1,0 +1,4 @@
+[[main_hosts]]
+hostname = "bench.local"
+cert_chain_path = "certs/cert.pem"
+private_key_path = "certs/key.pem"
