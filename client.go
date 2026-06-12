@@ -112,6 +112,23 @@ func (c *Client) h2RoundTripper(tlsConfig tls.Config) {
 	c.wrapError = baderror.WrapH2
 }
 
+func (c *Client) resolveServer() (M.Socksaddr, error) {
+	if !c.server.IsDomain() {
+		return c.server, nil
+	}
+	if c.resolveFunc == nil {
+		return M.Socksaddr{}, E.New("resolve server without resolveFunc")
+	}
+	ip, err := c.resolveFunc(c.server.Fqdn)
+	if err != nil {
+		return M.Socksaddr{}, E.Cause(err, "resolve server")
+	}
+	return M.Socksaddr{
+		Addr: ip,
+		Port: c.server.Port,
+	}, nil
+}
+
 func (c *Client) Start() error {
 	if c.healthCheckTimer != nil {
 		c.healthCheckTimer = time.NewTimer(DefaultHealthCheckTimeout)
