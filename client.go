@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"runtime"
 	"time"
 
 	"github.com/sagernet/sing/common"
@@ -36,9 +37,28 @@ type ClientOptions struct {
 	QUIC                  bool
 	QUICCongestionControl string
 	HealthCheck           bool
+	// UserAgents is a collection of the user agent you want to show.
+	// Due to they may be used for discriminatory use, we are consider not to upload it.
+	UserAgents ClientUserAgents
 	// ResolveFunc is the function to resolve FQDN for packet conn.
 	// If not set, the packet conn will reject FQDN when writing.
 	ResolveFunc func(fqdn string) (netip.Addr, error)
+}
+
+type ClientUserAgents struct {
+	TCPUserAgent         string
+	UDPUserAgent         string
+	ICMPUserAgent        string
+	HealthCheckUserAgent string
+}
+
+func NewUserAgentFromAppName(name string) ClientUserAgents {
+	return ClientUserAgents{
+		TCPUserAgent:         runtime.GOOS + " " + name + "/" + Version,
+		UDPUserAgent:         runtime.GOOS + " " + UDPMagicAddress,
+		ICMPUserAgent:        runtime.GOOS + " " + ICMPMagicAddress,
+		HealthCheckUserAgent: runtime.GOOS,
+	}
 }
 
 type Client struct {
@@ -49,6 +69,7 @@ type Client struct {
 	roundTripper     RoundTripper
 	healthCheckTimer *time.Timer
 	wrapError        func(error) error
+	userAgents       ClientUserAgents
 	timeFunc         func() time.Time
 	resolveFunc      func(fqdn string) (netip.Addr, error)
 }
@@ -59,6 +80,7 @@ func NewClient(options ClientOptions) (client *Client, err error) {
 		detour:      options.Detour,
 		server:      options.Server,
 		auth:        buildAuth(options.Auth),
+		userAgents:  options.UserAgents,
 		resolveFunc: options.ResolveFunc,
 	}
 	nextProtos := options.TLSConfig.NextProtos()
@@ -158,7 +180,7 @@ func (c *Client) Dial(ctx context.Context, destination M.Socksaddr) (net.Conn, e
 	pipeReader, pipeWriter := io.Pipe()
 	host := destination.String()
 	request := newRequest(c.server.String(), host, pipeReader)
-	request.Header.Add("User-Agent", TCPUserAgent)
+	request.Header.Add("User-Agent", c.userAgents.TCPUserAgent)
 	request.Header.Add("Proxy-Authorization", c.auth)
 	conn := &tcpConn{
 		httpConn: httpConn{
@@ -195,7 +217,7 @@ func (c *Client) Dial(ctx context.Context, destination M.Socksaddr) (net.Conn, e
 func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
 	pipeReader, pipeWriter := io.Pipe()
 	request := newRequest(c.server.String(), UDPMagicAddress, pipeReader)
-	request.Header.Add("User-Agent", UDPUserAgent)
+	request.Header.Add("User-Agent", c.userAgents.UDPUserAgent)
 	request.Header.Add("Proxy-Authorization", c.auth)
 	conn := &clientPacketConn{
 		packetConn: packetConn{
@@ -235,7 +257,7 @@ func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
 func (c *Client) ListenICMP(ctx context.Context) (*IcmpConn, error) {
 	pipeReader, pipeWriter := io.Pipe()
 	request := newRequest(c.server.String(), ICMPMagicAddress, pipeReader)
-	request.Header.Add("User-Agent", ICMPUserAgent)
+	request.Header.Add("User-Agent", c.userAgents.ICMPUserAgent)
 	request.Header.Add("Proxy-Authorization", c.auth)
 	conn := &IcmpConn{
 		httpConn{
@@ -293,7 +315,7 @@ func (c *Client) HealthCheck(ctx context.Context) error {
 		Header: make(http.Header),
 		Host:   HealthCheckMagicAddress,
 	}
-	request.Header.Add("User-Agent", HealthCheckUserAgent)
+	request.Header.Add("User-Agent", c.userAgents.HealthCheckUserAgent)
 	request.Header.Add("Proxy-Authorization", c.auth)
 	response, err := c.roundTripper.RoundTrip(request.WithContext(ctx))
 	if err != nil {
