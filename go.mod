@@ -1,22 +1,25 @@
 module github.com/xchacha20-poly1305/sing-trusttunnel
 
-go 1.24.0
+go 1.25.0
 
 require (
-	github.com/sagernet/quic-go v0.59.0-sing-box-mod.5
-	github.com/sagernet/sing v0.8.12-0.20260702081104-2ded2af32d3d
-	github.com/sagernet/sing-quic v0.6.1
+	github.com/sagernet/quic-go v0.61.0-sing-box-mod.1
+	github.com/sagernet/sing v0.8.13-0.20260804143108-f22b119cc7a2
+	github.com/sagernet/sing-quic v0.6.4
 	github.com/stretchr/testify v1.11.1
-	golang.org/x/net v0.44.0
+	golang.org/x/net v0.56.0
 )
 
 require (
+	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/klauspost/compress v1.17.9 // indirect
+	github.com/metacubex/utls v1.8.7 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
-	golang.org/x/crypto v0.42.0 // indirect
+	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/exp v0.0.0-20250911091902-df9299821621 // indirect
-	golang.org/x/sys v0.41.0 // indirect
-	golang.org/x/text v0.29.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
