@@ -31,13 +31,13 @@ jobs:
             os-name: Windows
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        uses: actions/checkout@v7
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
+          cache: true
           go-version: ${{ matrix.go-version }}
+          cache-dependency-path: 'go.sum'
       - name: Build
         run: |
           make test
