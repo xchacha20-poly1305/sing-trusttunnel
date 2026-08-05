@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
-	"runtime"
 	"time"
 
 	"github.com/sagernet/sing/common"
@@ -19,35 +18,18 @@ import (
 )
 
 const (
-	Version = "v0.2.3"
-
+	Version                 = "v0.2.3"
 	UDPMagicAddress         = "_udp2"
 	ICMPMagicAddress        = "_icmp"
 	HealthCheckMagicAddress = "_check"
+
+	AppName = "sing-trusttunnel"
 
 	DefaultQuicStreamReceiveWindow = 131072 // Chrome's default
 	DefaultConnectionTimeout       = 30 * time.Second
 	DefaultHealthCheckTimeout      = 7 * time.Second
 	DefaultQuicMaxIdleTimeout      = 2 * (DefaultConnectionTimeout + DefaultHealthCheckTimeout)
 	DefaultSessionTimeout          = 30 * time.Second
-)
-
-var (
-	AppName = "sing-trusttunnel"
-
-	// TCPUserAgent is user-agent for TCP connections.
-	// Format: <platform> <app_name>
-	TCPUserAgent = runtime.GOOS + " " + AppName + "/" + Version
-
-	// UDPUserAgent is user-agent for UDP multiplexing.
-	// Format: <platform> _udp2
-	UDPUserAgent = runtime.GOOS + " " + UDPMagicAddress
-
-	// ICMPUserAgent is user-agent for ICMP multiplexing.
-	// Format: <platform> _icmp
-	ICMPUserAgent = runtime.GOOS + " " + ICMPMagicAddress
-
-	HealthCheckUserAgent = runtime.GOOS
 )
 
 var ErrQUICNotIncluded = E.New("QUIC is not included")
