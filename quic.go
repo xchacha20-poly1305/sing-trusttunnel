@@ -100,22 +100,23 @@ func setCongestionControl(timeFunc func() time.Time, conn *quic.Conn, name strin
 	case "bbr_standard":
 		congestionControl = congestion_bbr1.NewBbrSender(
 			congestion_bbr1.DefaultClock{TimeFunc: timeFunc},
-			congestion.ByteCount(conn.Config().InitialPacketSize),
+			conn.InitialPacketSize(),
 			congestion_bbr1.InitialCongestionWindowPackets,
 			congestion_bbr1.MaxCongestionWindowPackets,
 		)
 	case "bbr2":
 		congestionControl = congestion_bbr2.NewBBR2Sender(
 			congestion_bbr2.DefaultClock{TimeFunc: timeFunc},
-			congestion.ByteCount(conn.Config().InitialPacketSize),
+			conn.InitialPacketSize(),
 			0,
 			false,
 		)
 	case "bbr_variant":
+		initialPacketSize := conn.InitialPacketSize()
 		congestionControl = congestion_bbr2.NewBBR2Sender(
 			congestion_bbr2.DefaultClock{TimeFunc: timeFunc},
-			congestion.ByteCount(conn.Config().InitialPacketSize),
-			32*congestion.ByteCount(conn.Config().InitialPacketSize),
+			initialPacketSize,
+			32*initialPacketSize,
 			true,
 		)
 	case "cubic":
@@ -127,7 +128,7 @@ func setCongestionControl(timeFunc func() time.Time, conn *quic.Conn, name strin
 	case "reno":
 		congestionControl = congestion_meta1.NewCubicSender(
 			congestion_meta1.DefaultClock{TimeFunc: timeFunc},
-			congestion.ByteCount(conn.Config().InitialPacketSize),
+			conn.InitialPacketSize(),
 			true,
 		)
 	case "", "bbr":
@@ -135,7 +136,7 @@ func setCongestionControl(timeFunc func() time.Time, conn *quic.Conn, name strin
 	default:
 		congestionControl = congestion_meta2.NewBbrSender(
 			congestion_meta2.DefaultClock{TimeFunc: timeFunc},
-			congestion.ByteCount(conn.Config().InitialPacketSize),
+			conn.InitialPacketSize(),
 			congestion.ByteCount(congestion_meta1.InitialCongestionWindow),
 		)
 	}
