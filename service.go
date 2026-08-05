@@ -22,7 +22,7 @@ import (
 	sHttp "github.com/sagernet/sing/protocol/http"
 
 	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
+	"golang.org/x/net/http2/h2c" //nolint:staticcheck
 )
 
 type HandlerEx interface {
@@ -86,8 +86,11 @@ func wrapErrorFromContext(ctx context.Context) func(error) error {
 func (s *Service) Start(tcpListener net.Listener, udpConn net.PacketConn, tlsConfig tls.ServerConfig) error {
 	if tcpListener != nil {
 		h2Server := &http2.Server{}
+		// https://github.com/golang/go/issues/79293
+		// We have to use h2c because the underlying TLS conn may not be created by std TLS like TLS.
+		//goland:noinspection GoDeprecation
 		s.httpServer = &http.Server{
-			Handler:     h2c.NewHandler(s, h2Server),
+			Handler:     h2c.NewHandler(s, h2Server), //nolint:staticcheck
 			IdleTimeout: DefaultSessionTimeout,
 			BaseContext: func(net.Listener) context.Context {
 				ctx := s.ctx
