@@ -76,7 +76,7 @@ func (h *echoHandler) NewConnectionEx(ctx context.Context, conn net.Conn, _, _ M
 	go func() {
 		defer onClose(nil)
 		defer conn.Close()
-		_ = bufio.CopyConn(ctx, conn, conn)
+		_, _ = bufio.Copy(conn, conn)
 	}()
 }
 
@@ -84,7 +84,19 @@ func (h *echoHandler) NewPacketConnectionEx(ctx context.Context, conn N.PacketCo
 	go func() {
 		defer onClose(nil)
 		defer conn.Close()
-		_ = bufio.CopyPacketConn(ctx, conn, conn)
+		for {
+			buffer := buf.NewPacket()
+			destination, err := conn.ReadPacket(buffer)
+			if err != nil {
+				buffer.Release()
+				return
+			}
+			err = conn.WritePacket(buffer, destination)
+			buffer.Release()
+			if err != nil {
+				return
+			}
+		}
 	}()
 }
 
