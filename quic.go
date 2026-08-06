@@ -17,19 +17,14 @@ import (
 	"github.com/sagernet/sing-quic/congestion_bbr2"
 	congestion_meta1 "github.com/sagernet/sing-quic/congestion_meta1"
 	congestion_meta2 "github.com/sagernet/sing-quic/congestion_meta2"
-	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/tls"
 )
 
 func (c *Client) quicRoundTripper(tlsConfig tls.Config, congestionControlName string) error {
-	stdConfig, err := tlsConfig.STDConfig()
-	if err != nil {
-		return err
-	}
+	tlsConfig = tlsConfig.Clone()
 	c.roundTripper = &http3.Transport{
-		TLSClientConfig: stdConfig,
 		QUICConfig: &quic.Config{
 			Versions:                   []quic.Version{quic.Version1},
 			MaxIdleTimeout:             DefaultQuicMaxIdleTimeout,
@@ -37,12 +32,14 @@ func (c *Client) quicRoundTripper(tlsConfig tls.Config, congestionControlName st
 			DisablePathMTUDiscovery:    !(runtime.GOOS == "windows" || runtime.GOOS == "linux" || runtime.GOOS == "android" || runtime.GOOS == "darwin"),
 			Allow0RTT:                  false,
 		},
-		Dial: func(ctx context.Context, addr string, tlsCfg *stdTLS.Config, cfg *quic.Config) (*quic.Conn, error) {
+		Dial: func(ctx context.Context, addr string, _ *stdTLS.Config, cfg *quic.Config) (*quic.Conn, error) {
 			conn, err := c.detour.DialContext(ctx, N.NetworkUDP, c.server)
 			if err != nil {
 				return nil, err
 			}
-			quicConn, err := quic.DialEarly(ctx, bufio.NewUnbindPacketConn(conn), c.server.UDPAddr(), tlsCfg, cfg)
+			// What http3 do for tls config: set SNI and set ALPN.
+			// We have already done.
+			quicConn, err := qtls.DialEarly(ctx, conn, tlsConfig, cfg)
 			if err != nil {
 				_ = conn.Close()
 				return nil, err

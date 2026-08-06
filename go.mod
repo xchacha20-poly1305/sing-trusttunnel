@@ -3,9 +3,9 @@ module github.com/xchacha20-poly1305/sing-trusttunnel
 go 1.25.0
 
 require (
-	github.com/sagernet/quic-go v0.61.0-sing-box-mod.1
+	github.com/sagernet/quic-go v0.61.0-sing-box-mod.2
 	github.com/sagernet/sing v0.8.13-0.20260804143108-f22b119cc7a2
-	github.com/sagernet/sing-quic v0.6.4
+	github.com/sagernet/sing-quic v0.7.0-beta.1
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/net v0.56.0
 )
