@@ -12,6 +12,7 @@ jobs:
   build:
     name: ${{ matrix.os-name }} (Go ${{ matrix.go-version }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
