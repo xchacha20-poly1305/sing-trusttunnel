@@ -248,7 +248,7 @@ func (r *Router) NewConnectionEx(ctx context.Context, conn net.Conn, source M.So
 	defer destinationConn.Close()
 	err = bufio.CopyConn(ctx, conn, destinationConn)
 	onClose(err)
-	if !E.IsClosedOrCanceled(err) {
+	if err != nil && !E.IsClosedOrCanceled(err) {
 		r.logger.ErrorContext(ctx, "connection closed: ", err)
 	}
 }
@@ -265,7 +265,7 @@ func (r *Router) NewPacketConnectionEx(ctx context.Context, conn N.PacketConn, s
 	ctx, timeoutConn := canceler.NewPacketConn(ctx, bufio.NewPacketConn(destinationConn), DefaultUDPTimeout)
 	err = bufio.CopyPacketConn(ctx, conn, timeoutConn)
 	onClose(err)
-	if !E.IsClosedOrCanceled(err) {
+	if err != nil && !E.IsClosedOrCanceled(err) {
 		r.logger.ErrorContext(ctx, "packet connection closed: ", err)
 	}
 }
