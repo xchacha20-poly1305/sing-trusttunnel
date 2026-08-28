@@ -13,8 +13,6 @@ import (
 	"github.com/sagernet/quic-go/congestion"
 	"github.com/sagernet/quic-go/http3"
 	"github.com/sagernet/sing-quic"
-	"github.com/sagernet/sing-quic/congestion_bbr1"
-	"github.com/sagernet/sing-quic/congestion_bbr2"
 	congestion_meta1 "github.com/sagernet/sing-quic/congestion_meta1"
 	congestion_meta2 "github.com/sagernet/sing-quic/congestion_meta2"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -93,49 +91,24 @@ func (s *Service) configHTTP3Server(tlsConfig tls.ServerConfig, udpConn net.Pack
 
 func setCongestionControl(timeFunc func() time.Time, conn *quic.Conn, name string) {
 	var congestionControl congestion.CongestionControl
+	initialPacketSize := conn.InitialPacketSize()
 	switch name {
-	case "bbr_standard":
-		congestionControl = congestion_bbr1.NewBbrSender(
-			congestion_bbr1.DefaultClock{TimeFunc: timeFunc},
-			conn.InitialPacketSize(),
-			congestion_bbr1.InitialCongestionWindowPackets,
-			congestion_bbr1.MaxCongestionWindowPackets,
-		)
-	case "bbr2":
-		congestionControl = congestion_bbr2.NewBBR2Sender(
-			congestion_bbr2.DefaultClock{TimeFunc: timeFunc},
-			conn.InitialPacketSize(),
-			0,
-			false,
-		)
-	case "bbr_variant":
-		initialPacketSize := conn.InitialPacketSize()
-		congestionControl = congestion_bbr2.NewBBR2Sender(
-			congestion_bbr2.DefaultClock{TimeFunc: timeFunc},
-			initialPacketSize,
-			32*initialPacketSize,
-			true,
-		)
 	case "cubic":
 		congestionControl = congestion_meta1.NewCubicSender(
 			congestion_meta1.DefaultClock{TimeFunc: timeFunc},
-			congestion.ByteCount(conn.Config().InitialPacketSize),
+			initialPacketSize,
 			false,
 		)
 	case "reno":
 		congestionControl = congestion_meta1.NewCubicSender(
 			congestion_meta1.DefaultClock{TimeFunc: timeFunc},
-			conn.InitialPacketSize(),
+			initialPacketSize,
 			true,
 		)
 	case "", "bbr":
 		fallthrough
 	default:
-		congestionControl = congestion_meta2.NewBbrSender(
-			congestion_meta2.DefaultClock{TimeFunc: timeFunc},
-			conn.InitialPacketSize(),
-			congestion.ByteCount(congestion_meta1.InitialCongestionWindow),
-		)
+		congestionControl = congestion_meta2.NewBbrSenderWithProfile(initialPacketSize, congestion_meta2.ProfileStandard)
 	}
 	conn.SetCongestionControl(congestionControl)
 }
