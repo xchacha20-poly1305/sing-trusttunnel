@@ -50,13 +50,13 @@ func runServer() (err error) {
 		return E.Cause(err, "listen TCP")
 	}
 	defer tcpListener.Close()
-	var udpConn net.PacketConn
+	var packetConn net.PacketConn
 	if options.ListenQUIC {
-		udpConn, err = net.ListenUDP(N.NetworkUDP, listenAddress.UDPAddr())
+		packetConn, err = net.ListenUDP(N.NetworkUDP, listenAddress.UDPAddr())
 		if err != nil {
 			return E.Cause(err, "listen UDP")
 		}
-		defer udpConn.Close()
+		defer packetConn.Close()
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -70,7 +70,7 @@ func runServer() (err error) {
 		QUICCongestionControl: "bbr",
 	})
 	service.UpdateUsers(options.Users)
-	err = service.Start(tcpListener, udpConn, tlsConfig)
+	err = service.Start(tcpListener, packetConn, tlsConfig)
 	if err != nil {
 		return E.Cause(err, "start service")
 	}

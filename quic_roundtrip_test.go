@@ -25,7 +25,7 @@ func TestRoundtripQUIC(t *testing.T) {
 	serverTLS.NextProtos = []string{http3.NextProtoH3}
 	clientTLS.NextProtos = []string{http3.NextProtoH3}
 
-	udpConn, err := N.SystemDialer.ListenPacket(t.Context(), M.SocksaddrFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), 0))
+	packetConn, err := N.SystemDialer.ListenPacket(t.Context(), M.SocksaddrFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), 0))
 	require.NoError(t, err)
 
 	service := NewService(ServiceOptions{
@@ -34,12 +34,12 @@ func TestRoundtripQUIC(t *testing.T) {
 		Handler: &echoHandler{},
 	})
 	service.UpdateUsers([]auth.User{{Username: "test", Password: "test"}})
-	require.NoError(t, service.Start(nil, udpConn, &testServerTLSConfig{config: serverTLS}))
+	require.NoError(t, service.Start(nil, packetConn, &testServerTLSConfig{config: serverTLS}))
 
 	client, err := NewClient(ClientOptions{
 		Ctx:       t.Context(),
 		Detour:    new(N.DefaultDialer),
-		Server:    M.ParseSocksaddr(udpConn.LocalAddr().String()),
+		Server:    M.ParseSocksaddr(packetConn.LocalAddr().String()),
 		Auth:      auth.User{Username: "test", Password: "test"},
 		TLSConfig: &testClientTLSConfig{config: clientTLS},
 		QUIC:      true,

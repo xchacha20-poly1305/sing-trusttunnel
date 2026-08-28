@@ -50,7 +50,7 @@ func (c *Client) quicRoundTripper(tlsConfig tls.Config, congestionControlName st
 	return nil
 }
 
-func (s *Service) configHTTP3Server(tlsConfig tls.ServerConfig, udpConn net.PacketConn) error {
+func (s *Service) configHTTP3Server(tlsConfig tls.ServerConfig, packetConn net.PacketConn) error {
 	tlsConfig = tlsConfig.Clone().(tls.ServerConfig)
 	err := qtls.ConfigureHTTP3(tlsConfig)
 	if err != nil {
@@ -60,7 +60,7 @@ func (s *Service) configHTTP3Server(tlsConfig tls.ServerConfig, udpConn net.Pack
 	// qtls.ConfigureHTTP3 never work because http3.ConfigureTLSConfig modified and returns a copy.
 	// https://github.com/quic-go/quic-go/blob/c56e8c79d1627cc1ed6005b421b4b0adadd83665/http3/server.go#L47-L63
 	tlsConfig.SetNextProtos([]string{http3.NextProtoH3})
-	quicListener, err := qtls.ListenEarly(udpConn, tlsConfig, &quic.Config{
+	quicListener, err := qtls.ListenEarly(packetConn, tlsConfig, &quic.Config{
 		Versions:           []quic.Version{quic.Version1},
 		MaxIdleTimeout:     DefaultQuicMaxIdleTimeout,
 		MaxIncomingStreams: 1 << 60,
@@ -79,7 +79,7 @@ func (s *Service) configHTTP3Server(tlsConfig tls.ServerConfig, udpConn net.Pack
 		},
 	}
 	s.h3Server = h3Server
-	s.udpConn = udpConn
+	s.packetConn = packetConn
 	go func() {
 		sErr := h3Server.ServeListener(quicListener)
 		if sErr != nil && !E.IsClosedOrCanceled(sErr) {

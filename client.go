@@ -46,6 +46,7 @@ type ClientOptions struct {
 }
 
 type ClientUserAgents struct {
+	AppName              string
 	TCPUserAgent         string
 	UDPUserAgent         string
 	ICMPUserAgent        string
@@ -53,7 +54,9 @@ type ClientUserAgents struct {
 }
 
 func NewUserAgentFromAppName(name string) ClientUserAgents {
+	name = truncateAppName(name)
 	return ClientUserAgents{
+		AppName:              name,
 		TCPUserAgent:         runtime.GOOS + " " + name + "/" + Version,
 		UDPUserAgent:         runtime.GOOS + " " + UDPMagicAddress,
 		ICMPUserAgent:        runtime.GOOS + " " + ICMPMagicAddress,
@@ -77,6 +80,7 @@ type Client struct {
 }
 
 func NewClient(options ClientOptions) (client *Client, err error) {
+	options.UserAgents.AppName = truncateAppName(options.UserAgents.AppName)
 	client = &Client{
 		ctx:         options.Ctx,
 		detour:      options.Detour,
@@ -222,8 +226,8 @@ func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
 	request := newRequest(c.server.String(), UDPMagicAddress, pipeReader)
 	request.Header.Add("User-Agent", c.userAgents.UDPUserAgent)
 	request.Header.Add("Proxy-Authorization", c.auth)
-	conn := &clientPacketConn{
-		packetConn: packetConn{
+	conn := &clientUDPConn{
+		udpConn: udpConn{
 			httpConn: httpConn{
 				writer:    pipeWriter,
 				wrapError: c.wrapError,
@@ -231,6 +235,7 @@ func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
 			},
 			resolveFunc: c.resolveFunc,
 		},
+		appName: c.userAgents.AppName,
 	}
 	requestCtx, cancel := context.WithCancel(c.ctx)
 	conn.closeHook = cancel

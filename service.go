@@ -50,7 +50,7 @@ type Service struct {
 	h3Server              io.Closer
 	tcpListener           net.Listener
 	tlsListener           net.Listener
-	udpConn               net.PacketConn
+	packetConn            net.PacketConn
 	timeFunc              func() time.Time
 }
 
@@ -79,7 +79,7 @@ func wrapErrorFromContext(ctx context.Context) func(error) error {
 	return ctx.Value(wrapErrorKey{}).(func(error) error)
 }
 
-func (s *Service) Start(tcpListener net.Listener, udpConn net.PacketConn, tlsConfig tls.ServerConfig) error {
+func (s *Service) Start(tcpListener net.Listener, packetConn net.PacketConn, tlsConfig tls.ServerConfig) error {
 	if tcpListener != nil {
 		protocol := new(http.Protocols)
 		protocol.SetHTTP1(false)
@@ -108,8 +108,8 @@ func (s *Service) Start(tcpListener net.Listener, udpConn net.PacketConn, tlsCon
 			}
 		}()
 	}
-	if udpConn != nil {
-		err := s.configHTTP3Server(tlsConfig, udpConn)
+	if packetConn != nil {
+		err := s.configHTTP3Server(tlsConfig, packetConn)
 		if err != nil {
 			return err
 		}
@@ -141,7 +141,7 @@ func (s *Service) Close() error {
 		s.tlsListener,
 		s.tcpListener,
 		s.h3Server,
-		s.udpConn,
+		s.packetConn,
 	)
 	return E.Errors(shutdownErr, closeErr)
 }
@@ -172,8 +172,8 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		if isFlusher {
 			flusher.Flush()
 		}
-		conn := &serverPacketConn{
-			packetConn: packetConn{
+		conn := &serverUDPConn{
+			udpConn: udpConn{
 				httpConn: httpConn{
 					writer:    writer,
 					flusher:   flusher,

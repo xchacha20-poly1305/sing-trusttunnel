@@ -14,7 +14,14 @@ import (
 	"github.com/sagernet/sing/common/rw"
 )
 
-type packetConn struct {
+func truncateAppName(name string) string {
+	if len(name) > math.MaxUint8 {
+		name = name[:math.MaxUint8]
+	}
+	return name
+}
+
+type udpConn struct {
 	httpConn
 	resolveFunc     func(fqdn string) (netip.Addr, error)
 	readWaitOptions N.ReadWaitOptions
@@ -28,16 +35,8 @@ const (
 	serverPacketHeaderFixedLen = packetLengthLen + packetAddressPortLen + packetAddressPortLen
 )
 
-func packetAppName() string {
-	appName := AppName
-	if len(appName) > math.MaxUint8 {
-		appName = appName[:math.MaxUint8]
-	}
-	return appName
-}
-
-func clientPacketHeaderLen() int {
-	return clientPacketHeaderBaseLen + len(packetAppName())
+func clientPacketHeaderLen(nameLen int) int {
+	return clientPacketHeaderBaseLen + nameLen
 }
 
 func packetWriteBuffer(payload []byte, frontHeadroom int) *buf.Buffer {
@@ -47,71 +46,72 @@ func packetWriteBuffer(payload []byte, frontHeadroom int) *buf.Buffer {
 	return buffer
 }
 
-func (c *packetConn) InitializeReadWaiter(options N.ReadWaitOptions) (needCopy bool) {
+func (c *udpConn) InitializeReadWaiter(options N.ReadWaitOptions) (needCopy bool) {
 	c.readWaitOptions = options
 	return false
 }
 
 var (
-	_ N.NetPacketConn    = (*clientPacketConn)(nil)
-	_ N.FrontHeadroom    = (*clientPacketConn)(nil)
-	_ N.PacketReadWaiter = (*clientPacketConn)(nil)
+	_ N.NetPacketConn    = (*clientUDPConn)(nil)
+	_ N.FrontHeadroom    = (*clientUDPConn)(nil)
+	_ N.PacketReadWaiter = (*clientUDPConn)(nil)
 )
 
-type clientPacketConn struct {
-	packetConn
+type clientUDPConn struct {
+	udpConn
+	appName string
 }
 
-func (u *clientPacketConn) FrontHeadroom() int {
-	return clientPacketHeaderLen()
+func (c *clientUDPConn) FrontHeadroom() int {
+	return clientPacketHeaderLen(len(c.appName))
 }
 
-func (u *clientPacketConn) WaitReadPacket() (buffer *buf.Buffer, destination M.Socksaddr, err error) {
-	buffer = u.readWaitOptions.NewPacketBuffer()
-	destination, err = u.ReadPacket(buffer)
+func (c *clientUDPConn) WaitReadPacket() (buffer *buf.Buffer, destination M.Socksaddr, err error) {
+	buffer = c.readWaitOptions.NewPacketBuffer()
+	destination, err = c.ReadPacket(buffer)
 	if err != nil {
 		buffer.Release()
 		return nil, M.Socksaddr{}, err
 	}
-	u.readWaitOptions.PostReturn(buffer)
+	c.readWaitOptions.PostReturn(buffer)
 	return buffer, destination, nil
 }
 
-func (u *clientPacketConn) ReadPacket(buffer *buf.Buffer) (destination M.Socksaddr, err error) {
-	err = u.waitCreated()
+func (c *clientUDPConn) ReadPacket(buffer *buf.Buffer) (destination M.Socksaddr, err error) {
+	err = c.waitCreated()
 	if err != nil {
 		return M.Socksaddr{}, err
 	}
-	return u.readPacketFromServer(buffer)
+	return c.readPacketFromServer(buffer)
 }
 
-func (u *clientPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
+func (c *clientUDPConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 	buffer := buf.With(p)
-	destination, err := u.ReadPacket(buffer)
+	destination, err := c.ReadPacket(buffer)
 	if err != nil {
 		return 0, nil, err
 	}
 	return buffer.Len(), destination.UDPAddr(), nil
 }
 
-func (u *clientPacketConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
-	return u.writePacketToServer(buffer, destination)
+func (c *clientUDPConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
+	return c.writePacketToServer(buffer, destination)
 }
 
-func (u *clientPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
-	err = u.WritePacket(packetWriteBuffer(p, clientPacketHeaderLen()), M.SocksaddrFromNet(addr))
+func (c *clientUDPConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
+	err = c.WritePacket(packetWriteBuffer(p, clientPacketHeaderLen(len(c.appName))), M.SocksaddrFromNet(addr))
 	if err != nil {
 		return 0, err
 	}
 	return len(p), nil
 }
 
-func (u *clientPacketConn) readPacketFromServer(buffer *buf.Buffer) (destination M.Socksaddr, err error) {
+func (c *clientUDPConn) readPacketFromServer(buffer *buf.Buffer) (destination M.Socksaddr, err error) {
 	header := buf.NewSize(4 + 16 + 2 + 16 + 2)
 	defer header.Release()
-	_, err = header.ReadFullFrom(u.body, header.Cap())
+	_, err = header.ReadFullFrom(c.body, header.Cap())
 	if err != nil {
-		err = u.wrapError(err)
+		err = c.wrapError(err)
 		return
 	}
 	var length uint32
@@ -125,27 +125,26 @@ func (u *clientPacketConn) readPacketFromServer(buffer *buf.Buffer) (destination
 	if payloadLen < 0 {
 		return M.Socksaddr{}, E.New("invalid udp length: ", length)
 	}
-	_, err = buffer.ReadFullFrom(u.body, payloadLen)
-	err = u.wrapError(err)
+	_, err = buffer.ReadFullFrom(c.body, payloadLen)
+	err = c.wrapError(err)
 	return
 }
 
-func (u *clientPacketConn) writePacketToServer(buffer *buf.Buffer, source M.Socksaddr) error {
+func (c *clientUDPConn) writePacketToServer(buffer *buf.Buffer, source M.Socksaddr) error {
 	defer buffer.Release()
 	if !source.IsIP() {
-		if u.resolveFunc == nil {
+		if c.resolveFunc == nil {
 			return E.New("write to without resolveFunc")
 		}
-		ip, err := u.resolveFunc(source.Fqdn)
+		ip, err := c.resolveFunc(source.Fqdn)
 		if err != nil {
 			return err
 		}
 		source.Addr = ip
 	}
-	appName := packetAppName()
 	payloadLen := buffer.Len()
-	headerLen := clientPacketHeaderBaseLen + len(appName)
-	lengthField := uint32(packetAddressPortLen + packetAddressPortLen + packetAppNameLengthLen + len(appName) + payloadLen)
+	headerLen := clientPacketHeaderBaseLen + len(c.appName)
+	lengthField := uint32(packetAddressPortLen + packetAddressPortLen + packetAppNameLengthLen + len(c.appName) + payloadLen)
 	destinationAddress := buildPaddingIP(source.Addr)
 
 	var (
@@ -164,84 +163,84 @@ func (u *clientPacketConn) writePacketToServer(buffer *buf.Buffer, source M.Sock
 	common.Must(header.WriteZeroN(16 + 2)) // Source address:port (unknown)
 	common.Must1(header.Write(destinationAddress[:]))
 	common.Must(binary.Write(header, binary.BigEndian, source.Port))
-	common.Must(binary.Write(header, binary.BigEndian, uint8(len(appName))))
-	common.Must1(header.WriteString(appName))
+	common.Must(binary.Write(header, binary.BigEndian, uint8(len(c.appName))))
+	common.Must1(header.WriteString(c.appName))
 	if !headerInBuffer {
-		_, err := u.writer.Write(header.Bytes())
+		_, err := c.writer.Write(header.Bytes())
 		if err != nil {
-			return u.wrapError(err)
+			return c.wrapError(err)
 		}
 	}
-	_, err := u.writer.Write(buffer.Bytes())
+	_, err := c.writer.Write(buffer.Bytes())
 	if err != nil {
-		return u.wrapError(err)
+		return c.wrapError(err)
 	}
-	if u.flusher != nil {
-		u.flusher.Flush()
+	if c.flusher != nil {
+		c.flusher.Flush()
 	}
 	return nil
 }
 
 var (
-	_ N.NetPacketConn    = (*serverPacketConn)(nil)
-	_ N.FrontHeadroom    = (*serverPacketConn)(nil)
-	_ N.PacketReadWaiter = (*serverPacketConn)(nil)
+	_ N.NetPacketConn    = (*serverUDPConn)(nil)
+	_ N.FrontHeadroom    = (*serverUDPConn)(nil)
+	_ N.PacketReadWaiter = (*serverUDPConn)(nil)
 )
 
-type serverPacketConn struct {
-	packetConn
+type serverUDPConn struct {
+	udpConn
 }
 
-func (u *serverPacketConn) FrontHeadroom() int {
+func (s *serverUDPConn) FrontHeadroom() int {
 	return serverPacketHeaderFixedLen
 }
 
-func (u *serverPacketConn) WaitReadPacket() (buffer *buf.Buffer, destination M.Socksaddr, err error) {
-	buffer = u.readWaitOptions.NewPacketBuffer()
-	destination, err = u.ReadPacket(buffer)
+func (s *serverUDPConn) WaitReadPacket() (buffer *buf.Buffer, destination M.Socksaddr, err error) {
+	buffer = s.readWaitOptions.NewPacketBuffer()
+	destination, err = s.ReadPacket(buffer)
 	if err != nil {
 		buffer.Release()
 		return nil, M.Socksaddr{}, err
 	}
-	u.readWaitOptions.PostReturn(buffer)
+	s.readWaitOptions.PostReturn(buffer)
 	return buffer, destination, nil
 }
 
-func (u *serverPacketConn) ReadPacket(buffer *buf.Buffer) (destination M.Socksaddr, err error) {
-	err = u.waitCreated()
+func (s *serverUDPConn) ReadPacket(buffer *buf.Buffer) (destination M.Socksaddr, err error) {
+	err = s.waitCreated()
 	if err != nil {
 		return M.Socksaddr{}, err
 	}
-	return u.readPacketFromClient(buffer)
+	return s.readPacketFromClient(buffer)
 }
 
-func (u *serverPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
+func (s *serverUDPConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 	buffer := buf.With(p)
-	destination, err := u.ReadPacket(buffer)
+	destination, err := s.ReadPacket(buffer)
 	if err != nil {
 		return 0, nil, err
 	}
 	return buffer.Len(), destination.UDPAddr(), nil
 }
 
-func (u *serverPacketConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
-	return u.writePacketToClient(buffer, destination)
+func (s *serverUDPConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
+	return s.writePacketToClient(buffer, destination)
 }
 
-func (u *serverPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
-	err = u.WritePacket(packetWriteBuffer(p, serverPacketHeaderFixedLen), M.SocksaddrFromNet(addr))
+func (s *serverUDPConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
+	err = s.WritePacket(packetWriteBuffer(p, serverPacketHeaderFixedLen), M.SocksaddrFromNet(addr))
 	if err != nil {
 		return 0, err
 	}
 	return len(p), nil
 }
 
-func (u *serverPacketConn) readPacketFromClient(buffer *buf.Buffer) (destination M.Socksaddr, err error) {
+func (s *serverUDPConn) readPacketFromClient(buffer *buf.Buffer) (destination M.Socksaddr, err error) {
 	header := buf.NewSize(4 + 16 + 2 + 16 + 2 + 1)
 	defer header.Release()
-	_, err = header.ReadFullFrom(u.body, header.Cap())
+	_, err = header.ReadFullFrom(s.body, header.Cap())
 	if err != nil {
-		err = u.wrapError(err)
+		err = s.wrapError(err)
 		return
 	}
 	var length uint32
@@ -258,9 +257,9 @@ func (u *serverPacketConn) readPacketFromClient(buffer *buf.Buffer) (destination
 	var appNameLen uint8
 	common.Must(binary.Read(header, binary.BigEndian, &appNameLen))
 	if appNameLen > 0 {
-		err = rw.SkipN(u.body, int(appNameLen))
+		err = rw.SkipN(s.body, int(appNameLen))
 		if err != nil {
-			err = u.wrapError(err)
+			err = s.wrapError(err)
 			return M.Socksaddr{}, err
 		}
 	}
@@ -268,12 +267,12 @@ func (u *serverPacketConn) readPacketFromClient(buffer *buf.Buffer) (destination
 	if payloadLen < 0 {
 		return M.Socksaddr{}, E.New("invalid udp length: ", length)
 	}
-	_, err = buffer.ReadFullFrom(u.body, payloadLen)
-	err = u.wrapError(err)
+	_, err = buffer.ReadFullFrom(s.body, payloadLen)
+	err = s.wrapError(err)
 	return
 }
 
-func (u *serverPacketConn) writePacketToClient(buffer *buf.Buffer, source M.Socksaddr) error {
+func (s *serverUDPConn) writePacketToClient(buffer *buf.Buffer, source M.Socksaddr) error {
 	defer buffer.Release()
 	if !source.IsIP() {
 		return E.New("only support IP")
@@ -302,17 +301,17 @@ func (u *serverPacketConn) writePacketToClient(buffer *buf.Buffer, source M.Sock
 	common.Must1(header.Write(destinationAddress[:]))
 	common.Must(binary.Write(header, binary.BigEndian, destinationPort))
 	if !headerInBuffer {
-		_, err := u.writer.Write(header.Bytes())
+		_, err := s.writer.Write(header.Bytes())
 		if err != nil {
-			return u.wrapError(err)
+			return s.wrapError(err)
 		}
 	}
-	_, err := u.writer.Write(buffer.Bytes())
+	_, err := s.writer.Write(buffer.Bytes())
 	if err != nil {
-		return u.wrapError(err)
+		return s.wrapError(err)
 	}
-	if u.flusher != nil {
-		u.flusher.Flush()
+	if s.flusher != nil {
+		s.flusher.Flush()
 	}
 	return nil
 }

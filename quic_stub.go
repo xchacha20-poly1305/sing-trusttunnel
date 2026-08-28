@@ -12,6 +12,6 @@ func (c *Client) quicRoundTripper(tlsConfig tls.Config, congestionControlName st
 	return ErrQUICNotIncluded
 }
 
-func (s *Service) configHTTP3Server(tlsConfig tls.ServerConfig, udpConn net.PacketConn) error {
+func (s *Service) configHTTP3Server(tlsConfig tls.ServerConfig, packetConn net.PacketConn) error {
 	return ErrQUICNotIncluded
 }
