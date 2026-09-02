@@ -312,6 +312,10 @@ func (c *Client) ResetConnections() {
 	c.resetHealthCheckTimer()
 }
 
+func (c *Client) CloseIdleConnections() {
+	c.roundTripper.CloseIdleConnections()
+}
+
 func (c *Client) HealthCheck(ctx context.Context) error {
 	defer c.resetHealthCheckTimer()
 	request := &http.Request{
