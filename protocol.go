@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	Version                 = "v0.3.0"
+	Version                 = "v0.3.2"
 	UDPMagicAddress         = "_udp2"
 	ICMPMagicAddress        = "_icmp"
 	HealthCheckMagicAddress = "_check"
