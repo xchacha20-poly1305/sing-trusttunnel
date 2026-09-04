@@ -18,8 +18,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestRoundtripQUIC(t *testing.T) {
-	t.Parallel()
+func newQUICTestSetup(t *testing.T, detour N.Dialer) *testSetup {
+	t.Helper()
 
 	serverTLS, clientTLS := generateTestTLSPair(t)
 	serverTLS.NextProtos = []string{http3.NextProtoH3}
@@ -38,7 +38,7 @@ func TestRoundtripQUIC(t *testing.T) {
 
 	client, err := NewClient(ClientOptions{
 		Ctx:       t.Context(),
-		Detour:    new(N.DefaultDialer),
+		Detour:    detour,
 		Server:    M.ParseSocksaddr(packetConn.LocalAddr().String()),
 		Auth:      auth.User{Username: "test", Password: "test"},
 		TLSConfig: &testClientTLSConfig{config: clientTLS},
@@ -51,9 +51,17 @@ func TestRoundtripQUIC(t *testing.T) {
 		_ = service.Close()
 	})
 
+	return &testSetup{service: service, client: client}
+}
+
+func TestRoundtripQUIC(t *testing.T) {
+	t.Parallel()
+
+	s := newQUICTestSetup(t, new(N.DefaultDialer))
+
 	dialCtx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	conn, err := client.Dial(dialCtx, M.ParseSocksaddr("example.com:80"))
+	conn, err := s.client.Dial(dialCtx, M.ParseSocksaddr("example.com:80"))
 	require.NoError(t, err)
 	defer conn.Close()
 

@@ -75,8 +75,7 @@ type Client struct {
 	userAgents       ClientUserAgents
 	timeFunc         func() time.Time
 	resolveFunc      func(fqdn string) (netip.Addr, error)
-
-	connTracker *connTracker // to force close conn for h2
+	connTracker      *connTracker
 }
 
 func NewClient(options ClientOptions) (client *Client, err error) {

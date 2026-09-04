@@ -8,12 +8,12 @@ import (
 
 	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
+	N "github.com/sagernet/sing/common/network"
 )
 
 func (c *Client) forceCloseAllConnections() {
 	roundTripper := c.roundTripper
 	roundTripper.CloseIdleConnections()
-	_ = common.Close(roundTripper) // Can close http3 connections
 
 	if tracker := c.connTracker; tracker != nil {
 		_ = tracker.Close()
@@ -81,6 +81,14 @@ type trackedConn interface {
 	closeFromTracker() error
 }
 
+// To expose underlying syscall conn wrapper
+var (
+	_ trackedConn          = (*trackedCommonConn)(nil)
+	_ common.WithUpstream  = (*trackedCommonConn)(nil)
+	_ N.ReaderWithUpstream = (*trackedCommonConn)(nil)
+	_ N.WriterWithUpstream = (*trackedCommonConn)(nil)
+)
+
 type trackedCommonConn struct {
 	net.Conn
 	closed  atomic.Bool
@@ -100,10 +108,29 @@ func (t *trackedCommonConn) closeFromTracker() error {
 	return t.Conn.Close()
 }
 
+func (t *trackedCommonConn) WriterReplaceable() bool {
+	return true
+}
+
+func (t *trackedCommonConn) ReaderReplaceable() bool {
+	return true
+}
+
+func (t *trackedCommonConn) Upstream() any {
+	return t.Conn
+}
+
 type duckTLSConn interface {
 	net.Conn
 	ConnectionState() stdTLS.ConnectionState
 }
+
+var (
+	_ trackedConn          = (*trackedTLSConn)(nil)
+	_ common.WithUpstream  = (*trackedTLSConn)(nil)
+	_ N.ReaderWithUpstream = (*trackedTLSConn)(nil)
+	_ N.WriterWithUpstream = (*trackedTLSConn)(nil)
+)
 
 type trackedTLSConn struct {
 	duckTLSConn
@@ -122,4 +149,16 @@ func (t *trackedTLSConn) Close() error {
 func (t *trackedTLSConn) closeFromTracker() error {
 	t.closed.Store(true)
 	return t.duckTLSConn.Close()
+}
+
+func (t *trackedTLSConn) WriterReplaceable() bool {
+	return true
+}
+
+func (t *trackedTLSConn) ReaderReplaceable() bool {
+	return true
+}
+
+func (t *trackedTLSConn) Upstream() any {
+	return t.duckTLSConn
 }
