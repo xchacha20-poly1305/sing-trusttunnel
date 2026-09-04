@@ -62,33 +62,50 @@ func TestKeepIdleConnectionsResumed(t *testing.T) {
 	require.Equal(t, 1, dialer.liveCount(), "the connection must be kept again after resuming")
 }
 
-func TestSetKeepIdleConnectionsSuspendsHealthCheck(t *testing.T) {
+func TestHealthCheckerArmAndSuspend(t *testing.T) {
 	t.Parallel()
 
 	s := newTestSetup(t)
-	controller := newIdleController(s.client, true, true)
-	controller.Start()
-	require.True(t, controller.timer.Stop(), "the health check timer should be armed")
-	controller.timer.Reset(DefaultHealthCheckTimeout)
+	checker := newHealthCheckScheduler(s.client, true)
+	checker.Start()
+	require.True(t, checker.timer.Stop(), "arming must schedule a check")
+	checker.timer.Reset(DefaultHealthCheckTimeout)
 
-	controller.SetKeep(false)
-	require.False(t, controller.timer.Stop(), "suspending must stop the health check timer")
+	checker.Stop()
+	require.False(t, checker.timer.Stop(), "suspending must stop the scheduled check")
 
-	controller.SetKeep(true)
-	require.True(t, controller.timer.Stop(), "resuming must arm the health check timer again")
+	checker.Delay()
+	require.False(t, checker.timer.Stop(), "postponing must not resurrect a suspended checker")
+
+	checker.Start()
+	require.True(t, checker.timer.Stop(), "resuming must schedule a check again")
+	checker.Stop()
 }
 
-func TestIdleControllerDoubleRelease(t *testing.T) {
+func TestDisabledHealthCheckerIsInert(t *testing.T) {
 	t.Parallel()
 
 	s := newTestSetup(t)
-	controller := newIdleController(s.client, false, true)
-	release := controller.AddStream()
+	checker := newHealthCheckScheduler(s.client, false)
+	require.Nil(t, checker)
+	require.NotPanics(t, func() {
+		checker.Start()
+		checker.Delay()
+		checker.Stop()
+	})
+}
+
+func TestIdleManagerDoubleRelease(t *testing.T) {
+	t.Parallel()
+
+	s := newTestSetup(t)
+	manager := newIdleManager(s.client, true)
+	release := manager.AddStream()
 	release()
 	release()
-	controller.access.Lock()
-	defer controller.access.Unlock()
-	require.Zero(t, controller.streamCount)
+	manager.access.Lock()
+	defer manager.access.Unlock()
+	require.Zero(t, manager.streamCount)
 }
 
 func TestNewClientDefaultDoesNotKeepConnections(t *testing.T) {

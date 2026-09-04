@@ -82,6 +82,7 @@ type Client struct {
 	auth         string
 	roundTripper RoundTripper
 	idle         *idleManager
+	healthCheck  *healthCheckScheduler
 	wrapError    func(error) error
 	userAgents   ClientUserAgents
 	timeFunc     func() time.Time
@@ -124,7 +125,8 @@ func NewClient(options ClientOptions) (client *Client, err error) {
 		}
 		client.h2RoundTripper(options.TLSConfig)
 	}
-	client.idle = newIdleController(client, options.HealthCheck, keepSessionFromContext(options.Ctx))
+	client.idle = newIdleManager(client, keepSessionFromContext(options.Ctx))
+	client.healthCheck = newHealthCheckScheduler(client, options.HealthCheck)
 	return client, nil
 }
 
@@ -150,7 +152,9 @@ func (c *Client) h2RoundTripper(tlsConfig tls.Config) {
 }
 
 func (c *Client) Start() error {
-	c.idle.Start()
+	if c.idle.Keeping() {
+		c.healthCheck.Start()
+	}
 	return nil
 }
 
@@ -198,7 +202,7 @@ func (c *Client) openStream(host string, userAgent string, conn *httpConn) {
 			release()
 			return
 		}
-		c.idle.Activize()
+		c.healthCheck.Delay()
 		conn.setUp(response.Body, nil)
 	}()
 }
@@ -227,7 +231,7 @@ func (c *Client) ListenICMP(ctx context.Context) (*IcmpConn, error) {
 }
 
 func (c *Client) Close() error {
-	c.idle.Close()
+	c.healthCheck.Stop()
 	c.forceCloseAllConnections()
 	if closer, isCloser := c.roundTripper.(io.Closer); isCloser {
 		// HTTP/3 Transport
@@ -238,11 +242,19 @@ func (c *Client) Close() error {
 
 func (c *Client) ResetConnections() {
 	c.forceCloseAllConnections()
-	c.idle.Activize()
+	c.healthCheck.Delay()
 }
 
 func (c *Client) SetKeepIdleConnections(keep bool) {
-	c.idle.SetKeep(keep)
+	if !c.idle.SetKeep(keep) {
+		return
+	}
+	if keep {
+		c.healthCheck.Start()
+		return
+	}
+	c.healthCheck.Stop()
+	c.idle.CloseIdle()
 }
 
 func (c *Client) CloseIdleConnections() {
@@ -252,7 +264,7 @@ func (c *Client) CloseIdleConnections() {
 func (c *Client) HealthCheck(ctx context.Context) error {
 	release := c.idle.AddStream()
 	defer release()
-	defer c.idle.Activize()
+	defer c.healthCheck.Delay()
 	request := &http.Request{
 		Method: http.MethodConnect,
 		URL: &url.URL{
