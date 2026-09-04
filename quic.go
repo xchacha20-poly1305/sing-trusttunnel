@@ -22,6 +22,7 @@ import (
 
 func (c *Client) quicRoundTripper(tlsConfig tls.Config, congestionControlName string) error {
 	tlsConfig = tlsConfig.Clone()
+	c.connTracker = newConnTracker()
 	c.roundTripper = &http3.Transport{
 		QUICConfig: &quic.Config{
 			Versions:                   []quic.Version{quic.Version1},
@@ -35,6 +36,7 @@ func (c *Client) quicRoundTripper(tlsConfig tls.Config, congestionControlName st
 			if err != nil {
 				return nil, err
 			}
+			conn = c.connTracker.track(conn)
 			// What http3 do for tls config: set SNI and set ALPN.
 			// We have already done.
 			quicConn, err := qtls.DialEarly(ctx, conn, tlsConfig, cfg)
@@ -43,6 +45,11 @@ func (c *Client) quicRoundTripper(tlsConfig tls.Config, congestionControlName st
 				return nil, err
 			}
 			setCongestionControl(c.timeFunc, quicConn, congestionControlName)
+			// quic-go never closes a net.Conn it did not create itself, so the socket
+			// and its tracker entry have to be released when the connection ends.
+			_ = context.AfterFunc(quicConn.Context(), func() {
+				_ = conn.Close()
+			})
 			return quicConn, nil
 		},
 	}

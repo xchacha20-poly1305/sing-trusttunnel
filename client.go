@@ -75,8 +75,7 @@ type Client struct {
 	userAgents       ClientUserAgents
 	timeFunc         func() time.Time
 	resolveFunc      func(fqdn string) (netip.Addr, error)
-
-	connTracker *connTracker // to force close conn for h2
+	connTracker      *connTracker
 }
 
 func NewClient(options ClientOptions) (client *Client, err error) {
@@ -300,10 +299,11 @@ func (c *Client) ListenICMP(ctx context.Context) (*IcmpConn, error) {
 }
 
 func (c *Client) Close() error {
-	c.forceCloseAllConnections()
 	if c.healthCheckTimer != nil {
 		c.healthCheckTimer.Stop()
 	}
+	c.forceCloseAllConnections()
+	_ = common.Close(c.roundTripper) // Close HTTP/3
 	return nil
 }
 

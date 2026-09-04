@@ -212,6 +212,18 @@ func (c *closeTrackingConn) Close() error {
 	return c.Conn.Close()
 }
 
+func (c *closeTrackingConn) Upstream() any {
+	return c.Conn
+}
+
+func (c *closeTrackingConn) ReaderReplaceable() bool {
+	return true
+}
+
+func (c *closeTrackingConn) WriterReplaceable() bool {
+	return true
+}
+
 func openLiveStreams(t *testing.T, client *Client, n int) []io.Closer {
 	t.Helper()
 	streams := make([]io.Closer, 0, n)
