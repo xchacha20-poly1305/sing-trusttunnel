@@ -65,17 +65,17 @@ func NewUserAgentFromAppName(name string) ClientUserAgents {
 }
 
 type Client struct {
-	ctx              context.Context
-	detour           N.Dialer
-	server           M.Socksaddr
-	auth             string
-	roundTripper     RoundTripper
-	healthCheckTimer *time.Timer
-	wrapError        func(error) error
-	userAgents       ClientUserAgents
-	timeFunc         func() time.Time
-	resolveFunc      func(fqdn string) (netip.Addr, error)
-	connTracker      *connTracker
+	ctx          context.Context
+	detour       N.Dialer
+	server       M.Socksaddr
+	auth         string
+	roundTripper RoundTripper
+	idle         *idleManager
+	wrapError    func(error) error
+	userAgents   ClientUserAgents
+	timeFunc     func() time.Time
+	resolveFunc  func(fqdn string) (netip.Addr, error)
+	connTracker  *connTracker
 }
 
 func NewClient(options ClientOptions) (client *Client, err error) {
@@ -113,9 +113,7 @@ func NewClient(options ClientOptions) (client *Client, err error) {
 		}
 		client.h2RoundTripper(options.TLSConfig)
 	}
-	if options.HealthCheck {
-		client.healthCheckTimer = new(time.Timer)
-	}
+	client.idle = newIdleController(client, options.HealthCheck)
 	return client, nil
 }
 
@@ -141,32 +139,8 @@ func (c *Client) h2RoundTripper(tlsConfig tls.Config) {
 }
 
 func (c *Client) Start() error {
-	if c.healthCheckTimer != nil {
-		c.healthCheckTimer = time.NewTimer(DefaultHealthCheckTimeout)
-		go c.loopHealthCheck()
-	}
+	c.idle.Start()
 	return nil
-}
-
-func (c *Client) loopHealthCheck() {
-	for {
-		select {
-		case <-c.healthCheckTimer.C:
-		case <-c.ctx.Done():
-			c.healthCheckTimer.Stop()
-			return
-		}
-		ctx, cancel := context.WithTimeout(c.ctx, DefaultHealthCheckTimeout)
-		_ = c.HealthCheck(ctx)
-		cancel()
-	}
-}
-
-func (c *Client) resetHealthCheckTimer() {
-	if c.healthCheckTimer == nil {
-		return
-	}
-	c.healthCheckTimer.Reset(DefaultHealthCheckTimeout)
 }
 
 func newRequest(serverAddr, host string, body io.ReadCloser) *http.Request {
@@ -182,142 +156,92 @@ func newRequest(serverAddr, host string, body io.ReadCloser) *http.Request {
 	}
 }
 
-func (c *Client) Dial(ctx context.Context, destination M.Socksaddr) (net.Conn, error) {
+func (c *Client) openStream(host string, userAgent string, conn *httpConn) {
 	pipeReader, pipeWriter := io.Pipe()
-	host := destination.String()
+	conn.writer = pipeWriter
+	conn.wrapError = c.wrapError
+	conn.created = make(chan struct{})
 	request := newRequest(c.server.String(), host, pipeReader)
-	request.Header.Add("User-Agent", c.userAgents.TCPUserAgent)
+	request.Header.Add("User-Agent", userAgent)
 	request.Header.Add("Proxy-Authorization", c.auth)
-	conn := &tcpConn{
-		httpConn: httpConn{
-			writer:    pipeWriter,
-			wrapError: c.wrapError,
-			created:   make(chan struct{}),
-		},
+	ctx, cancel := context.WithCancel(c.ctx)
+	release := c.idle.AddStream()
+	conn.closeHook = func() {
+		cancel()
+		release()
 	}
-	requestCtx, cancel := context.WithCancel(c.ctx)
-	conn.closeHook = cancel
 	go func() {
-		timeout := time.AfterFunc(DefaultSessionTimeout, cancel)
-		defer timeout.Stop()
-		response, err := c.roundTripper.RoundTrip(request.WithContext(requestCtx))
+		timeoutTimer := time.AfterFunc(DefaultSessionTimeout, cancel)
+		defer timeoutTimer.Stop()
+		response, err := c.roundTripper.RoundTrip(request.WithContext(ctx))
 		if err != nil {
 			err = c.wrapError(err)
-			_ = pipeWriter.CloseWithError(err)
-			_ = pipeReader.CloseWithError(err)
-			conn.setUp(nil, err)
 		} else if response.StatusCode != http.StatusOK {
 			_ = response.Body.Close()
 			err = E.New("unexpected status code: ", response.StatusCode)
+		}
+		if err != nil {
 			_ = pipeWriter.CloseWithError(err)
 			_ = pipeReader.CloseWithError(err)
 			conn.setUp(nil, err)
-		} else {
-			c.resetHealthCheckTimer()
-			conn.setUp(response.Body, nil)
+			release()
+			return
 		}
+		c.idle.Activize()
+		conn.setUp(response.Body, nil)
 	}()
+}
+
+func (c *Client) Dial(ctx context.Context, destination M.Socksaddr) (net.Conn, error) {
+	conn := new(tcpConn)
+	c.openStream(destination.String(), c.userAgents.TCPUserAgent, &conn.httpConn)
 	return conn, nil
 }
 
 func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
-	pipeReader, pipeWriter := io.Pipe()
-	request := newRequest(c.server.String(), UDPMagicAddress, pipeReader)
-	request.Header.Add("User-Agent", c.userAgents.UDPUserAgent)
-	request.Header.Add("Proxy-Authorization", c.auth)
 	conn := &clientUDPConn{
 		udpConn: udpConn{
-			httpConn: httpConn{
-				writer:    pipeWriter,
-				wrapError: c.wrapError,
-				created:   make(chan struct{}),
-			},
 			resolveFunc: c.resolveFunc,
 		},
 		appName: c.userAgents.AppName,
 	}
-	requestCtx, cancel := context.WithCancel(c.ctx)
-	conn.closeHook = cancel
-	go func() {
-		timeout := time.AfterFunc(DefaultSessionTimeout, cancel)
-		defer timeout.Stop()
-		response, err := c.roundTripper.RoundTrip(request.WithContext(requestCtx))
-		if err != nil {
-			err = c.wrapError(err)
-			_ = pipeWriter.CloseWithError(err)
-			_ = pipeReader.CloseWithError(err)
-			conn.setUp(nil, err)
-		} else if response.StatusCode != http.StatusOK {
-			_ = response.Body.Close()
-			err = E.New("unexpected status code: ", response.StatusCode)
-			_ = pipeWriter.CloseWithError(err)
-			_ = pipeReader.CloseWithError(err)
-			conn.setUp(nil, err)
-		} else {
-			c.resetHealthCheckTimer()
-			conn.setUp(response.Body, nil)
-		}
-	}()
+	c.openStream(UDPMagicAddress, c.userAgents.UDPUserAgent, &conn.httpConn)
 	return conn, nil
 }
 
 func (c *Client) ListenICMP(ctx context.Context) (*IcmpConn, error) {
-	pipeReader, pipeWriter := io.Pipe()
-	request := newRequest(c.server.String(), ICMPMagicAddress, pipeReader)
-	request.Header.Add("User-Agent", c.userAgents.ICMPUserAgent)
-	request.Header.Add("Proxy-Authorization", c.auth)
-	conn := &IcmpConn{
-		httpConn{
-			writer:    pipeWriter,
-			wrapError: c.wrapError,
-			created:   make(chan struct{}),
-		},
-	}
-	requestCtx, cancel := context.WithCancel(c.ctx)
-	conn.closeHook = cancel
-	go func() {
-		timeoutTimer := time.AfterFunc(DefaultSessionTimeout, cancel)
-		defer timeoutTimer.Stop()
-		response, err := c.roundTripper.RoundTrip(request.WithContext(requestCtx))
-		if err != nil {
-			err = c.wrapError(err)
-			_ = pipeWriter.CloseWithError(err)
-			_ = pipeReader.CloseWithError(err)
-			conn.setUp(nil, err)
-		} else if response.StatusCode != http.StatusOK {
-			_ = response.Body.Close()
-			err = E.New("unexpected status code: ", response.StatusCode)
-			_ = pipeWriter.CloseWithError(err)
-			_ = pipeReader.CloseWithError(err)
-			conn.setUp(nil, err)
-		} else {
-			c.resetHealthCheckTimer()
-			conn.setUp(response.Body, nil)
-		}
-	}()
+	conn := new(IcmpConn)
+	c.openStream(ICMPMagicAddress, c.userAgents.ICMPUserAgent, &conn.httpConn)
 	return conn, nil
 }
 
 func (c *Client) Close() error {
-	if c.healthCheckTimer != nil {
-		c.healthCheckTimer.Stop()
-	}
+	c.idle.Close()
 	c.forceCloseAllConnections()
-	_ = common.Close(c.roundTripper) // Close HTTP/3
+	if closer, isCloser := c.roundTripper.(io.Closer); isCloser {
+		// HTTP/3 Transport
+		_ = closer.Close()
+	}
 	return nil
 }
 
 func (c *Client) ResetConnections() {
 	c.forceCloseAllConnections()
-	c.resetHealthCheckTimer()
+	c.idle.Activize()
+}
+
+func (c *Client) SetKeepIdleConnections(keep bool) {
+	c.idle.SetKeep(keep)
 }
 
 func (c *Client) CloseIdleConnections() {
-	c.roundTripper.CloseIdleConnections()
+	c.idle.CloseIdle()
 }
 
 func (c *Client) HealthCheck(ctx context.Context) error {
-	defer c.resetHealthCheckTimer()
+	release := c.idle.AddStream()
+	defer release()
+	defer c.idle.Activize()
 	request := &http.Request{
 		Method: http.MethodConnect,
 		URL: &url.URL{

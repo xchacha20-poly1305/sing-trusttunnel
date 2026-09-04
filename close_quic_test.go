@@ -71,3 +71,19 @@ func TestQUICIdleCloseReleasesTrackedConnections(t *testing.T) {
 		return dialer.liveCount() == 0 && trackerLen(s.client.connTracker) == 0
 	}, 5*time.Second, 10*time.Millisecond, "idle QUIC connections must be untracked and closed")
 }
+
+func TestSetKeepIdleConnectionsClosesQUICConnection(t *testing.T) {
+	t.Parallel()
+
+	dialer := newTrackingDialer()
+	s := newQUICTestSetup(t, dialer)
+
+	stream := openLiveTCP(t, s.client, []byte("idle"))
+	require.NoError(t, stream.Close())
+	require.Positive(t, dialer.liveCount())
+
+	s.client.SetKeepIdleConnections(false)
+	require.Eventually(t, func() bool {
+		return dialer.liveCount() == 0 && trackerLen(s.client.connTracker) == 0
+	}, 5*time.Second, 10*time.Millisecond, "suspending must close the idle QUIC connection")
+}

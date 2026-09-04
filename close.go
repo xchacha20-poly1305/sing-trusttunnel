@@ -12,12 +12,8 @@ import (
 )
 
 func (c *Client) forceCloseAllConnections() {
-	roundTripper := c.roundTripper
-	roundTripper.CloseIdleConnections()
-
-	if tracker := c.connTracker; tracker != nil {
-		_ = tracker.Close()
-	}
+	c.roundTripper.CloseIdleConnections()
+	_ = c.connTracker.Close()
 }
 
 type connTracker struct {
