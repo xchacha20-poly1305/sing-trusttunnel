@@ -19,11 +19,11 @@ type idleManager struct {
 	closeOnce sync.Once
 }
 
-func newIdleController(client *Client, healthCheck bool) *idleManager {
+func newIdleController(client *Client, healthCheck, keep bool) *idleManager {
 	return &idleManager{
 		client:      client,
 		healthCheck: healthCheck,
-		keep:        true,
+		keep:        keep,
 		done:        make(chan struct{}),
 	}
 }

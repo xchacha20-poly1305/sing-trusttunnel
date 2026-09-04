@@ -57,7 +57,9 @@ func TestQUICIdleCloseReleasesTrackedConnections(t *testing.T) {
 	t.Parallel()
 
 	dialer := newTrackingDialer()
-	s := newQUICTestSetup(t, dialer)
+	// The connection has to be kept once it falls idle, otherwise it is already
+	// gone before CloseIdleConnections gets a chance to release it.
+	s := newQUICTestSetupWith(t, true, dialer)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -76,7 +78,7 @@ func TestSetKeepIdleConnectionsClosesQUICConnection(t *testing.T) {
 	t.Parallel()
 
 	dialer := newTrackingDialer()
-	s := newQUICTestSetup(t, dialer)
+	s := newQUICTestSetupWith(t, true, dialer)
 
 	stream := openLiveTCP(t, s.client, []byte("idle"))
 	require.NoError(t, stream.Close())

@@ -20,6 +20,11 @@ import (
 
 func newQUICTestSetup(t *testing.T, detour N.Dialer) *testSetup {
 	t.Helper()
+	return newQUICTestSetupWith(t, false, detour)
+}
+
+func newQUICTestSetupWith(t *testing.T, keep bool, detour N.Dialer) *testSetup {
+	t.Helper()
 
 	serverTLS, clientTLS := generateTestTLSPair(t)
 	serverTLS.NextProtos = []string{http3.NextProtoH3}
@@ -36,8 +41,12 @@ func newQUICTestSetup(t *testing.T, detour N.Dialer) *testSetup {
 	service.UpdateUsers([]auth.User{{Username: "test", Password: "test"}})
 	require.NoError(t, service.Start(nil, packetConn, &testServerTLSConfig{config: serverTLS}))
 
+	ctx := t.Context()
+	if keep {
+		ctx = ContextWithKeepSession(ctx)
+	}
 	client, err := NewClient(ClientOptions{
-		Ctx:       t.Context(),
+		Ctx:       ctx,
 		Detour:    detour,
 		Server:    M.ParseSocksaddr(packetConn.LocalAddr().String()),
 		Auth:      auth.User{Username: "test", Password: "test"},

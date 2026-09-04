@@ -99,7 +99,7 @@ func TestClientCloseClosesActiveConnections(t *testing.T) {
 
 	dialer := newTrackingDialer()
 	serverStd, clientStd := generateTestTLSPair(t)
-	s := newTestSetupWith(t, &testServerTLSConfig{config: serverStd}, &testClientTLSConfig{config: clientStd}, dialer)
+	s := newTestSetupWith(t, false, &testServerTLSConfig{config: serverStd}, &testClientTLSConfig{config: clientStd}, dialer)
 
 	streams := openLiveStreams(t, s.client, 3)
 	tcpConns := dialer.snapshot()
@@ -123,7 +123,7 @@ func TestClientResetConnectionsClosesActiveConnections(t *testing.T) {
 
 	dialer := newTrackingDialer()
 	serverStd, clientStd := generateTestTLSPair(t)
-	s := newTestSetupWith(t, &testServerTLSConfig{config: serverStd}, &testClientTLSConfig{config: clientStd}, dialer)
+	s := newTestSetupWith(t, false, &testServerTLSConfig{config: serverStd}, &testClientTLSConfig{config: clientStd}, dialer)
 
 	streams := openLiveStreams(t, s.client, 3)
 	oldConns := dialer.snapshot()
@@ -146,7 +146,7 @@ func TestClientCloseClosesActiveFakeTLSConnections(t *testing.T) {
 	t.Parallel()
 
 	dialer := newTrackingDialer()
-	s := newTestSetupWith(t, &fakeTLSConfig{}, &fakeTLSConfig{}, dialer)
+	s := newTestSetupWith(t, false, &fakeTLSConfig{}, &fakeTLSConfig{}, dialer)
 
 	streams := openLiveStreams(t, s.client, 2)
 	require.NotEmpty(t, dialer.snapshot())

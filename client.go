@@ -28,6 +28,17 @@ type RoundTripper interface {
 	CloseIdleConnections()
 }
 
+type keepSessionKey struct{}
+
+func ContextWithKeepSession(ctx context.Context) context.Context {
+	return context.WithValue(ctx, (*keepSessionKey)(nil), true)
+}
+
+func keepSessionFromContext(ctx context.Context) bool {
+	keep, _ := ctx.Value((*keepSessionKey)(nil)).(bool)
+	return keep
+}
+
 type ClientOptions struct {
 	Ctx                   context.Context
 	Detour                N.Dialer
@@ -113,7 +124,7 @@ func NewClient(options ClientOptions) (client *Client, err error) {
 		}
 		client.h2RoundTripper(options.TLSConfig)
 	}
-	client.idle = newIdleController(client, options.HealthCheck)
+	client.idle = newIdleController(client, options.HealthCheck, keepSessionFromContext(options.Ctx))
 	return client, nil
 }
 
