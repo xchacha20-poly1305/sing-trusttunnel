@@ -99,7 +99,7 @@ func TestClientCloseClosesActiveConnections(t *testing.T) {
 
 	dialer := newTrackingDialer()
 	serverStd, clientStd := generateTestTLSPair(t)
-	s := newTestSetupWith(t, false, &testServerTLSConfig{config: serverStd}, &testClientTLSConfig{config: clientStd}, dialer)
+	s := newTestSetupWith(t, &testServerTLSConfig{config: serverStd}, &testClientTLSConfig{config: clientStd}, dialer)
 
 	streams := openLiveStreams(t, s.client, 3)
 	tcpConns := dialer.snapshot()
@@ -123,7 +123,7 @@ func TestClientResetConnectionsClosesActiveConnections(t *testing.T) {
 
 	dialer := newTrackingDialer()
 	serverStd, clientStd := generateTestTLSPair(t)
-	s := newTestSetupWith(t, false, &testServerTLSConfig{config: serverStd}, &testClientTLSConfig{config: clientStd}, dialer)
+	s := newTestSetupWith(t, &testServerTLSConfig{config: serverStd}, &testClientTLSConfig{config: clientStd}, dialer)
 
 	streams := openLiveStreams(t, s.client, 3)
 	oldConns := dialer.snapshot()
@@ -146,7 +146,7 @@ func TestClientCloseClosesActiveFakeTLSConnections(t *testing.T) {
 	t.Parallel()
 
 	dialer := newTrackingDialer()
-	s := newTestSetupWith(t, false, &fakeTLSConfig{}, &fakeTLSConfig{}, dialer)
+	s := newTestSetupWith(t, &fakeTLSConfig{}, &fakeTLSConfig{}, dialer)
 
 	streams := openLiveStreams(t, s.client, 2)
 	require.NotEmpty(t, dialer.snapshot())
@@ -241,7 +241,17 @@ func openLiveStreams(t *testing.T, client *Client, n int) []io.Closer {
 
 func openLiveTCP(t *testing.T, client *Client, payload []byte) net.Conn {
 	t.Helper()
-	conn, err := client.Dial(t.Context(), M.ParseSocksaddr("example.com:80"))
+	return dialLiveTCP(t, client, t.Context(), payload)
+}
+
+func openLiveTCPKeepSession(t *testing.T, client *Client, payload []byte) net.Conn {
+	t.Helper()
+	return dialLiveTCP(t, client, ContextWithKeepSession(t.Context()), payload)
+}
+
+func dialLiveTCP(t *testing.T, client *Client, ctx context.Context, payload []byte) net.Conn {
+	t.Helper()
+	conn, err := client.Dial(ctx, M.ParseSocksaddr("example.com:80"))
 	require.NoError(t, err)
 	_, err = conn.Write(payload)
 	require.NoError(t, err)

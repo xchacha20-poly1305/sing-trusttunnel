@@ -125,7 +125,7 @@ func NewClient(options ClientOptions) (client *Client, err error) {
 		}
 		client.h2RoundTripper(options.TLSConfig)
 	}
-	client.idle = newIdleManager(client, keepSessionFromContext(options.Ctx))
+	client.idle = newIdleManager(client)
 	client.healthCheck = newHealthCheckScheduler(client, options.HealthCheck)
 	return client, nil
 }
@@ -151,13 +151,6 @@ func (c *Client) h2RoundTripper(tlsConfig tls.Config) {
 	c.wrapError = baderror.WrapH2
 }
 
-func (c *Client) Start() error {
-	if c.idle.Keeping() {
-		c.healthCheck.Start()
-	}
-	return nil
-}
-
 func newRequest(serverAddr, host string, body io.ReadCloser) *http.Request {
 	return &http.Request{
 		Method: http.MethodConnect,
@@ -171,7 +164,7 @@ func newRequest(serverAddr, host string, body io.ReadCloser) *http.Request {
 	}
 }
 
-func (c *Client) openStream(host string, userAgent string, conn *httpConn) {
+func (c *Client) openStream(host string, userAgent string, conn *httpConn, keepSession bool) {
 	pipeReader, pipeWriter := io.Pipe()
 	conn.writer = pipeWriter
 	conn.wrapError = c.wrapError
@@ -180,7 +173,7 @@ func (c *Client) openStream(host string, userAgent string, conn *httpConn) {
 	request.Header.Add("User-Agent", userAgent)
 	request.Header.Add("Proxy-Authorization", c.auth)
 	ctx, cancel := context.WithCancel(c.ctx)
-	release := c.idle.AddStream()
+	release := c.idle.AddStream(keepSession)
 	conn.closeHook = func() {
 		cancel()
 		release()
@@ -202,14 +195,14 @@ func (c *Client) openStream(host string, userAgent string, conn *httpConn) {
 			release()
 			return
 		}
-		c.healthCheck.Delay()
+		c.healthCheck.Postpone()
 		conn.setUp(response.Body, nil)
 	}()
 }
 
 func (c *Client) Dial(ctx context.Context, destination M.Socksaddr) (net.Conn, error) {
 	conn := new(tcpConn)
-	c.openStream(destination.String(), c.userAgents.TCPUserAgent, &conn.httpConn)
+	c.openStream(destination.String(), c.userAgents.TCPUserAgent, &conn.httpConn, keepSessionFromContext(ctx))
 	return conn, nil
 }
 
@@ -220,13 +213,13 @@ func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
 		},
 		appName: c.userAgents.AppName,
 	}
-	c.openStream(UDPMagicAddress, c.userAgents.UDPUserAgent, &conn.httpConn)
+	c.openStream(UDPMagicAddress, c.userAgents.UDPUserAgent, &conn.httpConn, keepSessionFromContext(ctx))
 	return conn, nil
 }
 
 func (c *Client) ListenICMP(ctx context.Context) (*IcmpConn, error) {
 	conn := new(IcmpConn)
-	c.openStream(ICMPMagicAddress, c.userAgents.ICMPUserAgent, &conn.httpConn)
+	c.openStream(ICMPMagicAddress, c.userAgents.ICMPUserAgent, &conn.httpConn, keepSessionFromContext(ctx))
 	return conn, nil
 }
 
@@ -242,13 +235,11 @@ func (c *Client) Close() error {
 
 func (c *Client) ResetConnections() {
 	c.forceCloseAllConnections()
-	c.healthCheck.Delay()
+	c.healthCheck.Postpone()
 }
 
 func (c *Client) SetKeepIdleConnections(keep bool) {
-	if !c.idle.SetKeep(keep) {
-		return
-	}
+	c.idle.SetKeep(keep)
 	if keep {
 		c.healthCheck.Start()
 		return
@@ -262,9 +253,9 @@ func (c *Client) CloseIdleConnections() {
 }
 
 func (c *Client) HealthCheck(ctx context.Context) error {
-	release := c.idle.AddStream()
+	release := c.idle.AddStream(false)
 	defer release()
-	defer c.healthCheck.Delay()
+	defer c.healthCheck.Postpone()
 	request := &http.Request{
 		Method: http.MethodConnect,
 		URL: &url.URL{

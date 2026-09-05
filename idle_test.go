@@ -12,7 +12,7 @@ func TestSetKeepIdleConnectionsClosesAfterLastStream(t *testing.T) {
 
 	dialer := newTrackingDialer()
 	serverStd, clientStd := generateTestTLSPair(t)
-	s := newTestSetupWith(t, false, &testServerTLSConfig{config: serverStd}, &testClientTLSConfig{config: clientStd}, dialer)
+	s := newTestSetupWith(t, &testServerTLSConfig{config: serverStd}, &testClientTLSConfig{config: clientStd}, dialer)
 
 	stream := openLiveTCP(t, s.client, []byte("keep"))
 	require.Equal(t, 1, dialer.liveCount())
@@ -32,11 +32,11 @@ func TestSetKeepIdleConnectionsClosesIdleConnection(t *testing.T) {
 
 	dialer := newTrackingDialer()
 	serverStd, clientStd := generateTestTLSPair(t)
-	s := newTestSetupWith(t, true, &testServerTLSConfig{config: serverStd}, &testClientTLSConfig{config: clientStd}, dialer)
+	s := newTestSetupWith(t, &testServerTLSConfig{config: serverStd}, &testClientTLSConfig{config: clientStd}, dialer)
 
-	stream := openLiveTCP(t, s.client, []byte("idle"))
+	stream := openLiveTCPKeepSession(t, s.client, []byte("idle"))
 	require.NoError(t, stream.Close())
-	// Keeping is still enabled, so the idle connection is held open.
+	// The stream asked for its session to be kept, so the connection is held open.
 	require.Equal(t, 1, dialer.liveCount())
 
 	s.client.SetKeepIdleConnections(false)
@@ -49,7 +49,7 @@ func TestKeepIdleConnectionsResumed(t *testing.T) {
 
 	dialer := newTrackingDialer()
 	serverStd, clientStd := generateTestTLSPair(t)
-	s := newTestSetupWith(t, false, &testServerTLSConfig{config: serverStd}, &testClientTLSConfig{config: clientStd}, dialer)
+	s := newTestSetupWith(t, &testServerTLSConfig{config: serverStd}, &testClientTLSConfig{config: clientStd}, dialer)
 
 	s.client.SetKeepIdleConnections(false)
 	stream := openLiveTCP(t, s.client, []byte("suspended"))
@@ -74,7 +74,7 @@ func TestHealthCheckerArmAndSuspend(t *testing.T) {
 	checker.Stop()
 	require.False(t, checker.timer.Stop(), "suspending must stop the scheduled check")
 
-	checker.Delay()
+	checker.Postpone()
 	require.False(t, checker.timer.Stop(), "postponing must not resurrect a suspended checker")
 
 	checker.Start()
@@ -90,7 +90,7 @@ func TestDisabledHealthCheckerIsInert(t *testing.T) {
 	require.Nil(t, checker)
 	require.NotPanics(t, func() {
 		checker.Start()
-		checker.Delay()
+		checker.Postpone()
 		checker.Stop()
 	})
 }
@@ -99,8 +99,9 @@ func TestIdleManagerDoubleRelease(t *testing.T) {
 	t.Parallel()
 
 	s := newTestSetup(t)
-	manager := newIdleManager(s.client, true)
-	release := manager.AddStream()
+	manager := newIdleManager(s.client)
+	manager.SetKeep(true)
+	release := manager.AddStream(false)
 	release()
 	release()
 	manager.access.Lock()
@@ -108,29 +109,34 @@ func TestIdleManagerDoubleRelease(t *testing.T) {
 	require.Zero(t, manager.streamCount)
 }
 
-func TestNewClientDefaultDoesNotKeepConnections(t *testing.T) {
+func TestDialWithoutKeepSessionDoesNotKeepConnections(t *testing.T) {
 	t.Parallel()
 
 	dialer := newTrackingDialer()
 	serverStd, clientStd := generateTestTLSPair(t)
-	s := newTestSetupWith(t, false, &testServerTLSConfig{config: serverStd}, &testClientTLSConfig{config: clientStd}, dialer)
+	s := newTestSetupWith(t, &testServerTLSConfig{config: serverStd}, &testClientTLSConfig{config: clientStd}, dialer)
 
 	stream := openLiveTCP(t, s.client, []byte("no-keep"))
 	require.Equal(t, 1, dialer.liveCount())
 
 	require.NoError(t, stream.Close())
-	require.Equal(t, 0, dialer.liveCount(), "default client must not keep connections after the last stream closes")
+	require.Equal(t, 0, dialer.liveCount(), "a stream dialed without ContextWithKeepSession must not keep the connection")
 	require.Equal(t, 0, trackerLen(s.client.connTracker))
 }
 
-func TestNewClientWithKeepSessionKeepsConnections(t *testing.T) {
+func TestDialWithKeepSessionKeepsConnections(t *testing.T) {
 	t.Parallel()
 
 	dialer := newTrackingDialer()
 	serverStd, clientStd := generateTestTLSPair(t)
-	s := newTestSetupWith(t, true, &testServerTLSConfig{config: serverStd}, &testClientTLSConfig{config: clientStd}, dialer)
+	s := newTestSetupWith(t, &testServerTLSConfig{config: serverStd}, &testClientTLSConfig{config: clientStd}, dialer)
 
-	stream := openLiveTCP(t, s.client, []byte("keep"))
+	stream := openLiveTCPKeepSession(t, s.client, []byte("keep"))
 	require.NoError(t, stream.Close())
-	require.Equal(t, 1, dialer.liveCount(), "client with ContextWithKeepSession must keep connections after the last stream closes")
+	require.Equal(t, 1, dialer.liveCount(), "a stream dialed with ContextWithKeepSession must keep the connection after it closes")
+
+	// The exemption is per stream: a plain stream closing still ends the session.
+	plain := openLiveTCP(t, s.client, []byte("plain"))
+	require.NoError(t, plain.Close())
+	require.Equal(t, 0, dialer.liveCount())
 }

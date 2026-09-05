@@ -12,41 +12,30 @@ type idleManager struct {
 	streamCount int
 }
 
-func newIdleManager(client *Client, keep bool) *idleManager {
-	return &idleManager{
-		client: client,
-		keep:   keep,
-	}
+func newIdleManager(client *Client) *idleManager {
+	return &idleManager{client: client}
 }
 
-func (m *idleManager) Keeping() bool {
+func (m *idleManager) SetKeep(keep bool) {
 	m.access.Lock()
 	defer m.access.Unlock()
-	return m.keep
-}
-
-func (m *idleManager) SetKeep(keep bool) (changed bool) {
-	m.access.Lock()
-	defer m.access.Unlock()
-	if m.keep == keep {
-		return false
-	}
 	m.keep = keep
-	return true
 }
 
-func (m *idleManager) AddStream() (release func()) {
+func (m *idleManager) AddStream(keepSession bool) (release func()) {
 	m.access.Lock()
 	m.streamCount++
 	m.access.Unlock()
-	return sync.OnceFunc(m.releaseStream)
+	return sync.OnceFunc(func() {
+		m.releaseStream(keepSession)
+	})
 }
 
-func (m *idleManager) releaseStream() {
+func (m *idleManager) releaseStream(keepSession bool) {
 	m.access.Lock()
 	defer m.access.Unlock()
 	m.streamCount--
-	if m.streamCount > 0 || m.keep {
+	if m.streamCount > 0 || m.keep || keepSession {
 		return
 	}
 	m.closeIdleLocked()

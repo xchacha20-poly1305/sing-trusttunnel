@@ -210,15 +210,15 @@ func newTestSetup(t *testing.T) *testSetup {
 	t.Helper()
 
 	serverStd, clientStd := generateTestTLSPair(t)
-	return newTestSetupWith(t, false, &testServerTLSConfig{config: serverStd}, &testClientTLSConfig{config: clientStd}, new(N.DefaultDialer))
+	return newTestSetupWith(t, &testServerTLSConfig{config: serverStd}, &testClientTLSConfig{config: clientStd}, new(N.DefaultDialer))
 }
 
 func newTestSetupWithTLS(t *testing.T, serverTLS tls.ServerConfig, clientTLS tls.Config) *testSetup {
 	t.Helper()
-	return newTestSetupWith(t, false, serverTLS, clientTLS, new(N.DefaultDialer))
+	return newTestSetupWith(t, serverTLS, clientTLS, new(N.DefaultDialer))
 }
 
-func newTestSetupWith(t *testing.T, keep bool, serverTLS tls.ServerConfig, clientTLS tls.Config, detour N.Dialer) *testSetup {
+func newTestSetupWith(t *testing.T, serverTLS tls.ServerConfig, clientTLS tls.Config, detour N.Dialer) *testSetup {
 	t.Helper()
 
 	listener, err := net.Listen(N.NetworkTCP, "127.0.0.1:0")
@@ -232,20 +232,15 @@ func newTestSetupWith(t *testing.T, keep bool, serverTLS tls.ServerConfig, clien
 	service.UpdateUsers([]auth.User{{Username: "test", Password: "test"}})
 	require.NoError(t, service.Start(listener, nil, serverTLS))
 
-	ctx := t.Context()
-	if keep {
-		ctx = ContextWithKeepSession(ctx)
-	}
 	addr := listener.Addr().String()
 	client, err := NewClient(ClientOptions{
-		Ctx:       ctx,
+		Ctx:       t.Context(),
 		Detour:    detour,
 		Server:    M.ParseSocksaddr(addr),
 		Auth:      auth.User{Username: "test", Password: "test"},
 		TLSConfig: clientTLS,
 	})
 	require.NoError(t, err)
-	require.NoError(t, client.Start())
 
 	t.Cleanup(func() {
 		client.Close()

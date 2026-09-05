@@ -31,8 +31,8 @@ func (h *healthCheckScheduler) Start() {
 	h.resetTimerLocked()
 }
 
-// Delay resets timer. Invoke it after new stream established because a new stream is a alternative of health check.
-func (h *healthCheckScheduler) Delay() {
+// Postpone resets timer to postpone next health check. Invoke it after new stream established because a new stream is an alternative of health check.
+func (h *healthCheckScheduler) Postpone() {
 	if h == nil {
 		return
 	}
@@ -78,5 +78,5 @@ func (h *healthCheckScheduler) healthCheck() {
 		h.Stop()
 		return
 	}
-	h.Delay()
+	h.Postpone()
 }

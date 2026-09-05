@@ -84,11 +84,8 @@ func runClient() error {
 	if err != nil {
 		return E.Cause(err, "create client")
 	}
-	err = client.Start()
-	if err != nil {
-		return E.Cause(err, "start client")
-	}
 	defer client.Close()
+	client.SetKeepIdleConnections(true)
 
 	listenAddress := M.ParseSocksaddrHostPort(options.Listen, options.ListenPort)
 	if !listenAddress.IsValid() {
