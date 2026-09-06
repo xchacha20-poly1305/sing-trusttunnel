@@ -142,8 +142,9 @@ func (c *Client) h2RoundTripper(tlsConfig tls.Config) {
 		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return c.dialTLS(ctx, tlsConfig)
 		},
-		Protocols:       protocols,
-		IdleConnTimeout: DefaultSessionTimeout,
+		Protocols:          protocols,
+		DisableCompression: true,
+		IdleConnTimeout:    DefaultSessionTimeout,
 	}
 	c.wrapError = baderror.WrapH2
 }

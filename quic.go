@@ -58,6 +58,7 @@ func (c *Client) quicRoundTripper(tlsConfig tls.Config, congestionControlName st
 			})
 			return quicConn, nil
 		},
+		DisableCompression: true,
 	}
 	c.wrapError = qtls.WrapError
 	return nil
