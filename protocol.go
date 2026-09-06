@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/sagernet/sing/common"
@@ -26,10 +27,9 @@ const (
 	AppName = "sing-trusttunnel"
 
 	DefaultQuicStreamReceiveWindow = 131072 // Chrome's default
-	DefaultConnectionTimeout       = 30 * time.Second
 	DefaultHealthCheckTimeout      = 7 * time.Second
-	DefaultQuicMaxIdleTimeout      = 2 * (DefaultConnectionTimeout + DefaultHealthCheckTimeout)
 	DefaultSessionTimeout          = 30 * time.Second
+	DefaultQuicMaxIdleTimeout      = 2 * (DefaultSessionTimeout + DefaultHealthCheckTimeout)
 )
 
 var ErrQUICNotIncluded = E.New("QUIC is not included")
@@ -61,17 +61,31 @@ func buildPaddingIP(addr netip.Addr) (buffer [16]byte) {
 type httpConn struct {
 	writer    io.Writer
 	flusher   http.Flusher
-	body      io.ReadCloser
 	wrapError func(error) error
-	created   chan struct{}
-	createErr error
 	closeHook func()
+	created   chan struct{}
+
+	// access guards that body arrives only when the stream is set up, which may happen after Closing.
+	access    sync.Mutex
+	closed    bool
+	body      io.ReadCloser
+	createErr error
 }
 
 func (h *httpConn) setUp(body io.ReadCloser, err error) {
-	h.body = body
+	h.access.Lock()
+	closed := h.closed
+	if !closed {
+		h.body = body
+	} else if err == nil {
+		err = net.ErrClosed
+	}
 	h.createErr = err
+	h.access.Unlock()
 	close(h.created)
+	if closed {
+		_ = common.Close(body)
+	}
 }
 
 func (h *httpConn) waitCreated() error {
@@ -83,9 +97,13 @@ func (h *httpConn) Close() error {
 	if h.closeHook != nil {
 		h.closeHook()
 	}
+	h.access.Lock()
+	h.closed = true
+	body := h.body
+	h.access.Unlock()
 	return common.Close(
 		h.writer,
-		h.body,
+		body,
 	)
 }
 

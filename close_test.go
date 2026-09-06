@@ -2,6 +2,7 @@ package trusttunnel
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"slices"
@@ -14,13 +15,12 @@ import (
 	N "github.com/sagernet/sing/common/network"
 
 	"github.com/stretchr/testify/require"
-	"golang.org/x/net/http2"
 )
 
 func TestConnTrackerCloseClosesAll(t *testing.T) {
 	t.Parallel()
 
-	tracker := newConnTracker()
+	tracker := newConnTracker(t.Context())
 	const count = 5
 	remotes := make([]net.Conn, 0, count)
 	t.Cleanup(func() {
@@ -31,7 +31,7 @@ func TestConnTrackerCloseClosesAll(t *testing.T) {
 	for range count {
 		local, remote := net.Pipe()
 		remotes = append(remotes, remote)
-		_ = tracker.track(local)
+		_ = trackDial(t, tracker, local)
 	}
 
 	require.Equal(t, count, trackerLen(tracker))
@@ -47,10 +47,10 @@ func TestConnTrackerCloseClosesAll(t *testing.T) {
 func TestConnTrackerUntrackOnClose(t *testing.T) {
 	t.Parallel()
 
-	tracker := newConnTracker()
+	tracker := newConnTracker(t.Context())
 	local, remote := net.Pipe()
 	defer remote.Close()
-	tracked := tracker.track(local)
+	tracked := trackDial(t, tracker, local)
 	require.Equal(t, 1, trackerLen(tracker))
 
 	require.NoError(t, tracked.Close())
@@ -58,40 +58,53 @@ func TestConnTrackerUntrackOnClose(t *testing.T) {
 	require.ErrorIs(t, tracked.Close(), net.ErrClosed)
 }
 
-func TestNewTrackedConnWrapsTLSAndPlain(t *testing.T) {
+func TestConnTrackerRejectsLateDialAfterReset(t *testing.T) {
 	t.Parallel()
-
-	t.Run("plain", func(t *testing.T) {
-		t.Parallel()
-		local, remote := net.Pipe()
-		defer local.Close()
-		defer remote.Close()
-		_, ok := newTrackedConn(local, newConnTracker()).(*trackedCommonConn)
-		require.True(t, ok)
-	})
-
-	t.Run("tls", func(t *testing.T) {
-		t.Parallel()
-		local, remote := net.Pipe()
-		defer local.Close()
-		defer remote.Close()
-		tracked := newTrackedConn(&fakeTLSConn{Conn: local}, newConnTracker())
-		tlsConn, isTLSConn := tracked.(*trackedTLSConn)
-		require.True(t, isTLSConn)
-		require.Equal(t, http2.NextProtoTLS, tlsConn.ConnectionState().NegotiatedProtocol)
-	})
-}
-
-func TestTrackedTLSConnDoubleClose(t *testing.T) {
-	t.Parallel()
-
+	tracker := newConnTracker(t.Context())
+	dial := tracker.BeginDial(t.Context())
+	defer dial.Cancel()
+	require.NoError(t, tracker.Close())
 	local, remote := net.Pipe()
 	defer remote.Close()
-	tracker := newConnTracker()
-	tracked := tracker.track(&fakeTLSConn{Conn: local})
+	conn := &closeTrackingConn{Conn: local}
+	tracked, err := dial.Track(conn)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Nil(t, tracked)
+	require.True(t, conn.closed.Load(), "a dial completing after reset must close its connection")
+	require.Zero(t, trackerLen(tracker))
+
+	// The reset must not poison the dials that come after it.
+	next := tracker.BeginDial(t.Context())
+	defer next.Cancel()
+	nextLocal, nextRemote := net.Pipe()
+	defer nextRemote.Close()
+	tracked, err = next.Track(nextLocal)
+	require.NoError(t, err)
+	require.NotNil(t, tracked)
+	require.Equal(t, 1, trackerLen(tracker))
 	require.NoError(t, tracked.Close())
-	require.ErrorIs(t, tracked.Close(), net.ErrClosed)
-	require.Equal(t, 0, trackerLen(tracker))
+}
+
+// TestBeginDialIgnoresRequesterCancellation covers what BeginDial is for: the
+// connection is shared by every stream, so it must not die with the request that
+// happened to trigger the dial.
+func TestBeginDialIgnoresRequesterCancellation(t *testing.T) {
+	t.Parallel()
+	tracker := newConnTracker(t.Context())
+	requestCtx, cancelRequest := context.WithCancel(t.Context())
+	dial := tracker.BeginDial(requestCtx)
+	defer dial.Cancel()
+	cancelRequest()
+	require.NoError(t, dial.Context().Err())
+	_, hasDeadline := dial.Context().Deadline()
+	require.False(t, hasDeadline, "the tracker must not impose a deadline of its own")
+
+	// Close aborts the dial through context.AfterFunc, which runs asynchronously;
+	// only Track is required to observe the reset synchronously.
+	require.NoError(t, tracker.Close())
+	require.Eventually(t, func() bool {
+		return errors.Is(dial.Context().Err(), context.Canceled)
+	}, time.Second, time.Millisecond, "Close must abort the dials in flight")
 }
 
 func TestClientCloseClosesActiveConnections(t *testing.T) {
@@ -295,6 +308,15 @@ func assertStreamsClosed(t *testing.T, streams []io.Closer) {
 			t.Fatalf("stream %d read still blocked after connections were closed", i)
 		}
 	}
+}
+
+func trackDial(t *testing.T, tracker *connTracker, conn net.Conn) trackedConn {
+	t.Helper()
+	dial := tracker.BeginDial(t.Context())
+	t.Cleanup(dial.Cancel)
+	tracked, err := dial.Track(conn)
+	require.NoError(t, err)
+	return tracked
 }
 
 func trackerLen(tracker *connTracker) int {

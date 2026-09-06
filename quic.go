@@ -22,7 +22,7 @@ import (
 
 func (c *Client) quicRoundTripper(tlsConfig tls.Config, congestionControlName string) error {
 	tlsConfig = tlsConfig.Clone()
-	c.connTracker = newConnTracker()
+	c.connTracker = newConnTracker(c.ctx)
 	c.roundTripper = &http3.Transport{
 		QUICConfig: &quic.Config{
 			Versions:                   []quic.Version{quic.Version1},
@@ -32,11 +32,17 @@ func (c *Client) quicRoundTripper(tlsConfig tls.Config, congestionControlName st
 			Allow0RTT:                  false,
 		},
 		Dial: func(ctx context.Context, addr string, _ *stdTLS.Config, cfg *quic.Config) (*quic.Conn, error) {
+			dial := c.connTracker.BeginDial(ctx)
+			defer dial.Cancel()
+			ctx = dial.Context()
 			conn, err := c.detour.DialContext(ctx, N.NetworkUDP, c.server)
 			if err != nil {
 				return nil, err
 			}
-			conn = c.connTracker.track(conn)
+			conn, err = dial.Track(conn)
+			if err != nil {
+				return nil, err
+			}
 			// What http3 do for tls config: set SNI and set ALPN.
 			// We have already done.
 			quicConn, err := qtls.DialEarly(ctx, conn, tlsConfig, cfg)

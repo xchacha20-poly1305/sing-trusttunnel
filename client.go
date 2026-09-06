@@ -2,13 +2,14 @@ package trusttunnel
 
 import (
 	"context"
-	stdTLS "crypto/tls"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/netip"
 	"net/url"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/sagernet/sing/common"
@@ -88,18 +89,19 @@ type Client struct {
 	timeFunc     func() time.Time
 	resolveFunc  func(fqdn string) (netip.Addr, error)
 	connTracker  *connTracker
+	cancel       context.CancelFunc
 }
 
 func NewClient(options ClientOptions) (client *Client, err error) {
 	options.UserAgents.AppName = truncateAppName(options.UserAgents.AppName)
 	client = &Client{
-		ctx:         options.Ctx,
 		detour:      options.Detour,
 		server:      options.Server,
 		auth:        buildAuth(options.Auth),
 		userAgents:  options.UserAgents,
 		resolveFunc: options.ResolveFunc,
 	}
+	client.ctx, client.cancel = context.WithCancel(options.Ctx)
 	nextProtos := options.TLSConfig.NextProtos()
 	if options.QUIC {
 		if len(nextProtos) == 0 {
@@ -131,78 +133,121 @@ func NewClient(options ClientOptions) (client *Client, err error) {
 }
 
 func (c *Client) h2RoundTripper(tlsConfig tls.Config) {
-	c.connTracker = newConnTracker()
-	c.roundTripper = &http2.Transport{
-		DialTLSContext: func(ctx context.Context, network, addr string, cfg *stdTLS.Config) (net.Conn, error) {
-			conn, err := c.detour.DialContext(ctx, N.NetworkTCP, c.server)
-			if err != nil {
-				return nil, err
-			}
-			tlsConn, err := tlsConfig.Client(conn)
-			if err != nil {
-				_ = conn.Close()
-				return nil, err
-			}
-			return c.connTracker.track(tlsConn), nil
+	c.connTracker = newConnTracker(c.ctx)
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(false)
+	protocols.SetHTTP2(true)
+	protocols.SetUnencryptedHTTP2(true) // Before go 1.27, ConnectionState() is not recognized.
+	c.roundTripper = &http.Transport{
+		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return c.dialTLS(ctx, tlsConfig)
 		},
-		AllowHTTP:       false,
+		Protocols:       protocols,
 		IdleConnTimeout: DefaultSessionTimeout,
 	}
 	c.wrapError = baderror.WrapH2
 }
 
-func newRequest(serverAddr, host string, body io.ReadCloser) *http.Request {
+func (c *Client) dialTLS(ctx context.Context, tlsConfig tls.Config) (net.Conn, error) {
+	dial := c.connTracker.BeginDial(ctx)
+	defer dial.Cancel()
+	ctx = dial.Context()
+	conn, err := c.detour.DialContext(ctx, N.NetworkTCP, c.server)
+	if err != nil {
+		return nil, err
+	}
+	tracked, err := dial.Track(conn)
+	if err != nil {
+		return nil, err
+	}
+	tlsConn, err := tls.ClientHandshake(ctx, tracked, tlsConfig)
+	if err != nil {
+		_ = tracked.Close()
+		return nil, err
+	}
+	if alpn := tlsConn.ConnectionState().NegotiatedProtocol; alpn != http2.NextProtoTLS {
+		_ = tlsConn.Close()
+		return nil, E.New("unexpected negotiated protocol: ", alpn)
+	}
+	return tlsConn, nil
+}
+
+func (c *Client) buildRequest(host, userAgent string, body io.ReadCloser) *http.Request {
+	header := make(http.Header)
+	header.Add("User-Agent", userAgent)
+	header.Add("Proxy-Authorization", c.auth)
 	return &http.Request{
 		Method: http.MethodConnect,
 		URL: &url.URL{
 			Scheme: "https",
-			Host:   serverAddr, // HTTP/2 reuse connection based on URL.Host
+			Host:   c.server.String(), // HTTP/2 reuse connection based on URL.Host
 		},
-		Header: make(http.Header),
+		Header: header,
 		Body:   body,
 		Host:   host,
 	}
 }
 
-func (c *Client) openStream(host string, userAgent string, conn *httpConn, keepSession bool) {
+// openStream opens a new stream based on h2/h3. ctx is only for controlling cancel.
+func (c *Client) openStream(ctx context.Context, host string, userAgent string, conn *httpConn) error {
 	pipeReader, pipeWriter := io.Pipe()
 	conn.writer = pipeWriter
 	conn.wrapError = c.wrapError
 	conn.created = make(chan struct{})
-	request := newRequest(c.server.String(), host, pipeReader)
-	request.Header.Add("User-Agent", userAgent)
-	request.Header.Add("Proxy-Authorization", c.auth)
-	ctx, cancel := context.WithCancel(c.ctx)
-	release := c.idle.AddStream(keepSession)
-	conn.closeHook = func() {
+	request := c.buildRequest(host, userAgent, pipeReader)
+	requestCtx, cancel := context.WithCancel(c.ctx)
+	release := c.idle.AddStream(keepSessionFromContext(ctx))
+	finish := sync.OnceFunc(func() {
 		cancel()
 		release()
+	})
+	conn.closeHook = finish
+	established := make(chan error, 1)
+	reportEstablished := func(err error) {
+		select {
+		case established <- err:
+		default:
+		}
 	}
+	requestCtx = httptrace.WithClientTrace(requestCtx, &httptrace.ClientTrace{
+		GotConn: func(_ httptrace.GotConnInfo) {
+			reportEstablished(nil)
+		},
+	})
 	go func() {
-		timeoutTimer := time.AfterFunc(DefaultSessionTimeout, cancel)
-		defer timeoutTimer.Stop()
-		response, err := c.roundTripper.RoundTrip(request.WithContext(ctx))
+		response, err := c.roundTripper.RoundTrip(request.WithContext(requestCtx))
 		if err != nil {
 			err = c.wrapError(err)
 		} else if response.StatusCode != http.StatusOK {
 			_ = response.Body.Close()
 			err = E.New("unexpected status code: ", response.StatusCode)
 		}
+		reportEstablished(err)
 		if err != nil {
 			_ = pipeWriter.CloseWithError(err)
 			_ = pipeReader.CloseWithError(err)
 			conn.setUp(nil, err)
-			release()
+			finish()
 			return
 		}
 		c.healthCheck.Postpone()
 		conn.setUp(response.Body, nil)
 	}()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-established:
+		return err
+	}
 }
 
 func (c *Client) Dial(ctx context.Context, destination M.Socksaddr) (net.Conn, error) {
 	conn := new(tcpConn)
-	c.openStream(destination.String(), c.userAgents.TCPUserAgent, &conn.httpConn, keepSessionFromContext(ctx))
+	err := c.openStream(ctx, destination.String(), c.userAgents.TCPUserAgent, &conn.httpConn)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
 	return conn, nil
 }
 
@@ -213,28 +258,42 @@ func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
 		},
 		appName: c.userAgents.AppName,
 	}
-	c.openStream(UDPMagicAddress, c.userAgents.UDPUserAgent, &conn.httpConn, keepSessionFromContext(ctx))
+	err := c.openStream(ctx, UDPMagicAddress, c.userAgents.UDPUserAgent, &conn.httpConn)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
 	return conn, nil
 }
 
 func (c *Client) ListenICMP(ctx context.Context) (*IcmpConn, error) {
 	conn := new(IcmpConn)
-	c.openStream(ICMPMagicAddress, c.userAgents.ICMPUserAgent, &conn.httpConn, keepSessionFromContext(ctx))
+	err := c.openStream(ctx, ICMPMagicAddress, c.userAgents.ICMPUserAgent, &conn.httpConn)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
 	return conn, nil
 }
 
 func (c *Client) Close() error {
+	c.cancel()
 	c.healthCheck.Stop()
-	c.forceCloseAllConnections()
+	var errs []error
+	if err := c.forceCloseAllConnections(); err != nil {
+		errs = append(errs, err)
+	}
 	if closer, isCloser := c.roundTripper.(io.Closer); isCloser {
 		// HTTP/3 Transport
-		_ = closer.Close()
+		if err := closer.Close(); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	return nil
+	return E.Errors(errs...)
 }
 
 func (c *Client) ResetConnections() {
-	c.forceCloseAllConnections()
+	_ = c.forceCloseAllConnections()
 	c.healthCheck.Postpone()
 }
 
@@ -256,17 +315,7 @@ func (c *Client) HealthCheck(ctx context.Context) error {
 	release := c.idle.AddStream(false)
 	defer release()
 	defer c.healthCheck.Postpone()
-	request := &http.Request{
-		Method: http.MethodConnect,
-		URL: &url.URL{
-			Scheme: "https",
-			Host:   HealthCheckMagicAddress,
-		},
-		Header: make(http.Header),
-		Host:   HealthCheckMagicAddress,
-	}
-	request.Header.Add("User-Agent", c.userAgents.HealthCheckUserAgent)
-	request.Header.Add("Proxy-Authorization", c.auth)
+	request := c.buildRequest(HealthCheckMagicAddress, c.userAgents.HealthCheckUserAgent, nil)
 	response, err := c.roundTripper.RoundTrip(request.WithContext(ctx))
 	if err != nil {
 		return c.wrapError(err)

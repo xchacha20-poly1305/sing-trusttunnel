@@ -5,6 +5,7 @@ package trusttunnel
 import (
 	"context"
 	"io"
+	"net/http/httptrace"
 	"net/netip"
 	"testing"
 	"time"
@@ -76,4 +77,30 @@ func TestRoundtripQUIC(t *testing.T) {
 	_, err = io.ReadFull(conn, got)
 	require.NoError(t, err)
 	require.Equal(t, payload, got)
+}
+
+func TestQUICRoundTripperReportsGotConn(t *testing.T) {
+	t.Parallel()
+	s := newQUICTestSetup(t, new(N.DefaultDialer))
+
+	gotConn := make(chan struct{}, 1)
+	ctx := httptrace.WithClientTrace(t.Context(), &httptrace.ClientTrace{
+		GotConn: func(httptrace.GotConnInfo) {
+			select {
+			case gotConn <- struct{}{}:
+			default:
+			}
+		},
+	})
+	require.NoError(t, s.client.HealthCheck(ctx))
+	select {
+	case <-gotConn:
+	default:
+		t.Fatal("GotConn was never reported")
+	}
+}
+
+func TestQUICSharedDialLifecycle(t *testing.T) {
+	t.Parallel()
+	testSharedDialLifecycle(t, true)
 }

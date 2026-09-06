@@ -1,7 +1,7 @@
 package trusttunnel
 
 import (
-	stdTLS "crypto/tls"
+	"context"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -11,32 +11,45 @@ import (
 	N "github.com/sagernet/sing/common/network"
 )
 
-func (c *Client) forceCloseAllConnections() {
+func (c *Client) forceCloseAllConnections() error {
 	c.roundTripper.CloseIdleConnections()
-	_ = c.connTracker.Close()
+	return c.connTracker.Close()
 }
 
 type connTracker struct {
+	parent context.Context
+
 	access sync.Mutex
 	conns  map[trackedConn]struct{}
+	// derivedContext is canceled by Close to abort the dials it started. Close then
+	// opens a new one, so dials started afterward are not born canceled.
+	derivedContext context.Context
+	cancel         context.CancelFunc
 }
 
-func newConnTracker() *connTracker {
-	return &connTracker{
-		conns: make(map[trackedConn]struct{}),
+func newConnTracker(ctx context.Context) *connTracker {
+	tracker := &connTracker{
+		parent: ctx,
+		conns:  make(map[trackedConn]struct{}),
 	}
+	tracker.derivedContext, tracker.cancel = context.WithCancel(ctx)
+	return tracker
 }
 
-func (c *connTracker) track(conn net.Conn) trackedConn {
-	tracked := newTrackedConn(conn, c)
+func (c *connTracker) BeginDial(ctx context.Context) *trackedDial {
 	c.access.Lock()
-	defer c.access.Unlock()
-	c.conns[tracked] = struct{}{}
-	return tracked
+	derivedContext := c.derivedContext
+	c.access.Unlock()
+	dial := &trackedDial{tracker: c, derivedContext: derivedContext}
+	dial.ctx, dial.cancel = context.WithCancel(context.WithoutCancel(ctx))
+	dial.stopCancel = context.AfterFunc(derivedContext, dial.cancel)
+	return dial
 }
 
 func (c *connTracker) Close() error {
 	c.access.Lock()
+	c.cancel()
+	c.derivedContext, c.cancel = context.WithCancel(c.parent)
 	conns := make([]trackedConn, 0, len(c.conns))
 	for conn := range c.conns {
 		conns = append(conns, conn)
@@ -53,23 +66,42 @@ func (c *connTracker) Close() error {
 	return E.Errors(errs...)
 }
 
-func (c *connTracker) untrack(conn trackedConn) {
+func (c *connTracker) Untrack(conn trackedConn) {
 	c.access.Lock()
 	defer c.access.Unlock()
 	delete(c.conns, conn)
 }
 
-func newTrackedConn(conn net.Conn, tracker *connTracker) trackedConn {
-	if tlsConn, isTLSConn := conn.(duckTLSConn); isTLSConn {
-		return &trackedTLSConn{
-			duckTLSConn: tlsConn,
-			tracker:     tracker,
-		}
+type trackedDial struct {
+	tracker        *connTracker
+	derivedContext context.Context
+	ctx            context.Context
+	cancel         context.CancelFunc
+	stopCancel     func() bool
+}
+
+func (d *trackedDial) Context() context.Context {
+	return d.ctx
+}
+
+func (d *trackedDial) Track(conn net.Conn) (trackedConn, error) {
+	tracker := d.tracker
+	tracker.access.Lock()
+	err := d.derivedContext.Err()
+	if err != nil {
+		tracker.access.Unlock()
+		_ = conn.Close()
+		return nil, err
 	}
-	return &trackedCommonConn{
-		Conn:    conn,
-		tracker: tracker,
-	}
+	tracked := &trackedCommonConn{Conn: conn, tracker: tracker}
+	tracker.conns[tracked] = struct{}{}
+	tracker.access.Unlock()
+	return tracked, nil
+}
+
+func (d *trackedDial) Cancel() {
+	d.stopCancel()
+	d.cancel()
 }
 
 type trackedConn interface {
@@ -77,9 +109,10 @@ type trackedConn interface {
 	closeFromTracker() error
 }
 
-// To expose underlying syscall conn wrapper
 var (
-	_ trackedConn          = (*trackedCommonConn)(nil)
+	_ trackedConn = (*trackedCommonConn)(nil)
+
+	// Expose underlying syscall conn wrapper for quic-go
 	_ common.WithUpstream  = (*trackedCommonConn)(nil)
 	_ N.ReaderWithUpstream = (*trackedCommonConn)(nil)
 	_ N.WriterWithUpstream = (*trackedCommonConn)(nil)
@@ -95,7 +128,7 @@ func (t *trackedCommonConn) Close() error {
 	if t.closed.Swap(true) {
 		return net.ErrClosed
 	}
-	t.tracker.untrack(t)
+	t.tracker.Untrack(t)
 	return t.Conn.Close()
 }
 
@@ -114,47 +147,4 @@ func (t *trackedCommonConn) ReaderReplaceable() bool {
 
 func (t *trackedCommonConn) Upstream() any {
 	return t.Conn
-}
-
-type duckTLSConn interface {
-	net.Conn
-	ConnectionState() stdTLS.ConnectionState
-}
-
-var (
-	_ trackedConn          = (*trackedTLSConn)(nil)
-	_ common.WithUpstream  = (*trackedTLSConn)(nil)
-	_ N.ReaderWithUpstream = (*trackedTLSConn)(nil)
-	_ N.WriterWithUpstream = (*trackedTLSConn)(nil)
-)
-
-type trackedTLSConn struct {
-	duckTLSConn
-	closed  atomic.Bool
-	tracker *connTracker
-}
-
-func (t *trackedTLSConn) Close() error {
-	if t.closed.Swap(true) {
-		return net.ErrClosed
-	}
-	t.tracker.untrack(t)
-	return t.duckTLSConn.Close()
-}
-
-func (t *trackedTLSConn) closeFromTracker() error {
-	t.closed.Store(true)
-	return t.duckTLSConn.Close()
-}
-
-func (t *trackedTLSConn) WriterReplaceable() bool {
-	return true
-}
-
-func (t *trackedTLSConn) ReaderReplaceable() bool {
-	return true
-}
-
-func (t *trackedTLSConn) Upstream() any {
-	return t.duckTLSConn
 }

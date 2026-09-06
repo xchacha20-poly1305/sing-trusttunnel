@@ -70,8 +70,9 @@ func (s *testServerTLSConfig) Server(conn net.Conn) (tls.Conn, error) {
 }
 
 type fakeTLSConfig struct {
-	serverName string
-	nextProtos []string
+	serverName         string
+	nextProtos         []string
+	negotiatedProtocol string
 }
 
 func (c *fakeTLSConfig) Start() error {
@@ -110,31 +111,37 @@ func (c *fakeTLSConfig) STDConfig() (*stdtls.Config, error) {
 }
 
 func (c *fakeTLSConfig) Client(conn net.Conn) (tls.Conn, error) {
-	return &fakeTLSConn{Conn: conn}, nil
+	return &fakeTLSConn{Conn: conn, negotiatedProtocol: c.negotiatedProtocol}, nil
 }
 
 func (c *fakeTLSConfig) Clone() tls.Config {
 	return &fakeTLSConfig{
-		serverName: c.serverName,
-		nextProtos: append([]string(nil), c.nextProtos...),
+		serverName:         c.serverName,
+		nextProtos:         append([]string(nil), c.nextProtos...),
+		negotiatedProtocol: c.negotiatedProtocol,
 	}
 }
 
 func (c *fakeTLSConfig) Server(conn net.Conn) (tls.Conn, error) {
-	return &fakeTLSConn{Conn: conn}, nil
+	return &fakeTLSConn{Conn: conn, negotiatedProtocol: c.negotiatedProtocol}, nil
 }
 
-var _ duckTLSConn = (*fakeTLSConn)(nil)
+var _ tls.Conn = (*fakeTLSConn)(nil)
 
 type fakeTLSConn struct {
 	net.Conn
+	negotiatedProtocol string
 }
 
 func (c *fakeTLSConn) NetConn() net.Conn                      { return c.Conn }
 func (c *fakeTLSConn) HandshakeContext(context.Context) error { return nil }
 func (c *fakeTLSConn) ConnectionState() stdtls.ConnectionState {
+	negotiatedProtocol := c.negotiatedProtocol
+	if negotiatedProtocol == "" {
+		negotiatedProtocol = http2.NextProtoTLS
+	}
 	return stdtls.ConnectionState{
-		NegotiatedProtocol: http2.NextProtoTLS,
+		NegotiatedProtocol: negotiatedProtocol,
 	}
 }
 

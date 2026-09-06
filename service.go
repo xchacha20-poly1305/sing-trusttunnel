@@ -81,10 +81,10 @@ func wrapErrorFromContext(ctx context.Context) func(error) error {
 
 func (s *Service) Start(tcpListener net.Listener, packetConn net.PacketConn, tlsConfig tls.ServerConfig) error {
 	if tcpListener != nil {
-		protocol := new(http.Protocols)
-		protocol.SetHTTP1(false)
-		protocol.SetHTTP2(true)
-		protocol.SetUnencryptedHTTP2(true)
+		protocols := new(http.Protocols)
+		protocols.SetHTTP1(false)
+		protocols.SetHTTP2(true)
+		protocols.SetUnencryptedHTTP2(true)
 		s.httpServer = &http.Server{
 			Handler:     s,
 			IdleTimeout: DefaultSessionTimeout,
@@ -93,7 +93,7 @@ func (s *Service) Start(tcpListener net.Listener, packetConn net.PacketConn, tls
 				ctx = contextWithWrapError(ctx, baderror.WrapH2)
 				return ctx
 			},
-			Protocols: protocol,
+			Protocols: protocols,
 		}
 		listener := tcpListener
 		s.tcpListener = tcpListener
