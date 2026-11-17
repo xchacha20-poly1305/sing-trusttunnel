@@ -248,6 +248,26 @@ func TestParse_IgnoreUnknownTag(t *testing.T) {
 	require.Equal(t, "user", parsed.Username)
 	require.Empty(t, parsed.Name)
 	require.Empty(t, parsed.ClientRandomAuthKey)
+	require.Empty(t, parsed.TLSProfile)
+}
+
+func TestParse_IgnoreMultibyteUnknownTag(t *testing.T) {
+	t.Parallel()
+	builder := bytes.NewBuffer(nil)
+	common.Must(writeTLV(builder, TagVersion, Version1))
+	common.Must(writeTLV(builder, TagHostname, "example.com"))
+	common.Must(writeTLV(builder, TagAddresses, "1.2.3.4:443"))
+	common.Must(writeTLV(builder, TagUsername, "user"))
+	common.Must(writeTLV(builder, TagPassword, "pass"))
+	// Tag 0x110 encodes as two-byte varint 0x41 0x10, whose low byte matches TagTLSProfile (0x10).
+	common.Must(writeTLV(builder, 0x110, "safari"))
+	require.True(t, bytes.Contains(builder.Bytes(), []byte{0x41, 0x10}))
+
+	link := Schema + "://?" + base64.RawURLEncoding.EncodeToString(builder.Bytes())
+	parsed, err := Parse(link)
+	require.NoError(t, err)
+	require.Equal(t, "user", parsed.Username)
+	require.Empty(t, parsed.TLSProfile)
 }
 
 func TestParse_InvalidScheme(t *testing.T) {
@@ -763,6 +783,7 @@ func TestBuild_VersionRaisedByFeatures(t *testing.T) {
 		{name: "dns upstreams", modify: func(u *URL) { u.DNSUpstreams = []string{"1.1.1.1"} }, version: Version1},
 		{name: "subscription url", modify: func(u *URL) { u.SubscriptionURL = testSubscriptionURL }, version: Version2},
 		{name: "subscription url with name", modify: func(u *URL) { u.Name = "Acme VPN"; u.SubscriptionURL = testSubscriptionURL }, version: Version2},
+		{name: "tls profile", modify: func(u *URL) { u.TLSProfile = "firefox" }, version: Version2},
 		{name: "explicit version kept", modify: func(u *URL) { u.Version = Version2 }, version: Version2},
 		{name: "explicit version raised", modify: func(u *URL) { u.Version = Version1; u.SubscriptionURL = testSubscriptionURL }, version: Version2},
 	}
@@ -977,11 +998,58 @@ func TestRoundTrip_EmptyPrefixAndAuthKeyOmitted(t *testing.T) {
 	// Empty prefix and auth key are skipped, so decode returns them empty.
 	assert.NotContains(t, tags, TagClientRandomPrefix)
 	assert.NotContains(t, tags, TagClientRandomAuthKey)
+	assert.NotContains(t, tags, TagTLSProfile)
 
 	parsed, err := Parse(link)
 	require.NoError(t, err)
 	require.Empty(t, parsed.ClientRandomPrefix)
 	require.Empty(t, parsed.ClientRandomAuthKey)
+	require.Empty(t, parsed.TLSProfile)
+}
+
+func TestRoundTrip_TLSProfile(t *testing.T) {
+	t.Parallel()
+	testCases := []string{"safari", "firefox", "future"}
+	for _, profile := range testCases {
+		t.Run(profile, func(t *testing.T) {
+			t.Parallel()
+			original := URL{
+				Hostname:   "vpn.example.com",
+				Addresses:  []M.Socksaddr{{Addr: netip.MustParseAddr("1.2.3.4"), Port: 443}},
+				Username:   "alice",
+				Password:   "secret",
+				TLSProfile: profile,
+			}
+
+			link, err := original.Build()
+			require.NoError(t, err)
+
+			payload := decodeTLVPayload(t, link)
+			require.Equal(t, [][]byte{[]byte(profile)}, decodeTLVValues(t, payload, TagTLSProfile))
+
+			parsed, err := Parse(link)
+			require.NoError(t, err)
+			require.Equal(t, profile, parsed.TLSProfile)
+		})
+	}
+}
+
+func TestBuild_TLSProfileOmittedWhenEmpty(t *testing.T) {
+	t.Parallel()
+	original := URL{
+		Hostname:  "vpn.example.com",
+		Addresses: []M.Socksaddr{{Addr: netip.MustParseAddr("1.2.3.4"), Port: 443}},
+		Username:  "alice",
+		Password:  "secret",
+	}
+
+	link, err := original.Build()
+	require.NoError(t, err)
+	assert.NotContains(t, decodeTLVTags(t, link), TagTLSProfile)
+
+	parsed, err := Parse(link)
+	require.NoError(t, err)
+	require.Empty(t, parsed.TLSProfile)
 }
 
 func TestParse_ClientRandomAuthKeyEmptyIsAllowed(t *testing.T) {

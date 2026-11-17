@@ -48,6 +48,7 @@ const (
 	TagDNSUpstreams        uint64 = 0x0D
 	TagSubscriptionURL     uint64 = 0x0E
 	TagClientRandomAuthKey uint64 = 0x0F
+	TagTLSProfile          uint64 = 0x10
 )
 
 type UpstreamProtocol byte
@@ -82,6 +83,7 @@ type URL struct {
 	DNSUpstreams        []string
 	SubscriptionURL     string
 	ClientRandomAuthKey []byte // will be encoded to hex
+	TLSProfile          string
 }
 
 func Parse(link string) (*URL, error) {
@@ -242,6 +244,12 @@ func parseTag(buffer *buf.Buffer, url *URL, tag uint64) error {
 			return E.Cause(err, "client random auth key is not hex")
 		}
 		url.ClientRandomAuthKey = value
+	case TagTLSProfile:
+		value, err := readTLVString(buffer, tag)
+		if err != nil {
+			return err
+		}
+		url.TLSProfile = value
 	case TagHasIPv6:
 		fallthrough
 	default:
@@ -389,7 +397,7 @@ func (u URL) requireValid() error {
 }
 
 func (u URL) lowestVersion() byte {
-	if u.SubscriptionURL != "" || len(u.ClientRandomAuthKey) > 0 {
+	if u.SubscriptionURL != "" || len(u.ClientRandomAuthKey) > 0 || u.TLSProfile != "" {
 		return Version2
 	}
 	/*if u.Name != "" || len(u.DNSUpstreams) > 0 {
@@ -492,6 +500,12 @@ func (u URL) Build() (string, error) {
 		err = writeTLV(builder, TagClientRandomAuthKey, hex.EncodeToString(u.ClientRandomAuthKey))
 		if err != nil {
 			return "", E.Cause(err, "write client random auth key")
+		}
+	}
+	if u.TLSProfile != "" {
+		err = writeTLV(builder, TagTLSProfile, u.TLSProfile)
+		if err != nil {
+			return "", E.Cause(err, "write tls profile")
 		}
 	}
 
