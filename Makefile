@@ -2,13 +2,10 @@ build:
 	go build -v -trimpath -ldflags='-w -s -buildid=' -tags "with_quic" ./cmd/sing-trusttunnel
 
 fmt:
-	@gofumpt -l -w .
-	@gofmt -s -w .
-	@gci write --custom-order -s standard -s "prefix(github.com/sagernet/)" -s "default" .
+	@golangci-lint fmt
 
 fmt_install:
-	go install -v mvdan.cc/gofumpt@latest
-	go install -v github.com/daixiang0/gci@latest
+	$(MAKE) lint_install
 
 lint:
 	GOOS=linux golangci-lint run ./...
