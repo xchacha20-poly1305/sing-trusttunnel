@@ -67,6 +67,23 @@ func (u UpstreamProtocol) IsValid() bool {
 	}
 }
 
+// TLSProfile identifies a TLS ClientHello fingerprint in a TrustTunnel URL.
+type TLSProfile byte
+
+const (
+	TLSProfileChrome       TLSProfile = 0x00
+	TLSProfileChromeCanary TLSProfile = 0x01
+	TLSProfileSafari       TLSProfile = 0x02
+	TLSProfileFirefox      TLSProfile = 0x03
+	TLSProfileOkHTTP       TLSProfile = 0x04
+	TLSProfileOpenSSL      TLSProfile = 0x05
+	TLSProfileBoringSSL    TLSProfile = 0x06
+)
+
+func (p TLSProfile) IsValid() bool {
+	return p <= TLSProfileBoringSSL
+}
+
 type URL struct {
 	Version             byte
 	Hostname            string
@@ -82,8 +99,8 @@ type URL struct {
 	Name                string
 	DNSUpstreams        []string
 	SubscriptionURL     string
-	ClientRandomAuthKey []byte // will be encoded to hex
-	TLSProfile          string
+	ClientRandomAuthKey []byte      // will be encoded to hex
+	TLSProfile          *TLSProfile // nil omits the tag, for which the client defaults to Chrome
 }
 
 func Parse(link string) (*URL, error) {
@@ -245,11 +262,15 @@ func parseTag(buffer *buf.Buffer, url *URL, tag uint64) error {
 		}
 		url.ClientRandomAuthKey = value
 	case TagTLSProfile:
-		value, err := readTLVString(buffer, tag)
+		value, err := readTLVByte(buffer, tag)
 		if err != nil {
 			return err
 		}
-		url.TLSProfile = value
+		profile := TLSProfile(value)
+		if !profile.IsValid() {
+			return E.New("invalid TLS profile: ", value)
+		}
+		url.TLSProfile = &profile
 	case TagHasIPv6:
 		fallthrough
 	default:
@@ -393,11 +414,14 @@ func (u URL) requireValid() error {
 	if !u.UpstreamProtocol.IsValid() {
 		return E.New("invalid upstream protocol ", byte(u.UpstreamProtocol))
 	}
+	if u.TLSProfile != nil && !u.TLSProfile.IsValid() {
+		return E.New("invalid TLS profile: ", byte(*u.TLSProfile))
+	}
 	return nil
 }
 
 func (u URL) lowestVersion() byte {
-	if u.SubscriptionURL != "" || len(u.ClientRandomAuthKey) > 0 || u.TLSProfile != "" {
+	if u.SubscriptionURL != "" || len(u.ClientRandomAuthKey) > 0 || u.TLSProfile != nil {
 		return Version2
 	}
 	/*if u.Name != "" || len(u.DNSUpstreams) > 0 {
@@ -502,8 +526,8 @@ func (u URL) Build() (string, error) {
 			return "", E.Cause(err, "write client random auth key")
 		}
 	}
-	if u.TLSProfile != "" {
-		err = writeTLV(builder, TagTLSProfile, u.TLSProfile)
+	if u.TLSProfile != nil {
+		err = writeTLV(builder, TagTLSProfile, byte(*u.TLSProfile))
 		if err != nil {
 			return "", E.Cause(err, "write tls profile")
 		}

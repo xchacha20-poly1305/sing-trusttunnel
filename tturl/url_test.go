@@ -783,7 +783,7 @@ func TestBuild_VersionRaisedByFeatures(t *testing.T) {
 		{name: "dns upstreams", modify: func(u *URL) { u.DNSUpstreams = []string{"1.1.1.1"} }, version: Version1},
 		{name: "subscription url", modify: func(u *URL) { u.SubscriptionURL = testSubscriptionURL }, version: Version2},
 		{name: "subscription url with name", modify: func(u *URL) { u.Name = "Acme VPN"; u.SubscriptionURL = testSubscriptionURL }, version: Version2},
-		{name: "tls profile", modify: func(u *URL) { u.TLSProfile = "firefox" }, version: Version2},
+		{name: "tls profile", modify: func(u *URL) { u.TLSProfile = common.Ptr(TLSProfileChrome) }, version: Version2},
 		{name: "explicit version kept", modify: func(u *URL) { u.Version = Version2 }, version: Version2},
 		{name: "explicit version raised", modify: func(u *URL) { u.Version = Version1; u.SubscriptionURL = testSubscriptionURL }, version: Version2},
 	}
@@ -1009,32 +1009,44 @@ func TestRoundTrip_EmptyPrefixAndAuthKeyOmitted(t *testing.T) {
 
 func TestRoundTrip_TLSProfile(t *testing.T) {
 	t.Parallel()
-	testCases := []string{"safari", "firefox", "future"}
-	for _, profile := range testCases {
-		t.Run(profile, func(t *testing.T) {
+	testCases := []struct {
+		name    string
+		profile TLSProfile
+		wire    byte
+	}{
+		{"chrome", TLSProfileChrome, 0x00},
+		{"chrome_canary", TLSProfileChromeCanary, 0x01},
+		{"safari", TLSProfileSafari, 0x02},
+		{"firefox", TLSProfileFirefox, 0x03},
+		{"okhttp", TLSProfileOkHTTP, 0x04},
+		{"openssl", TLSProfileOpenSSL, 0x05},
+		{"boringssl", TLSProfileBoringSSL, 0x06},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			original := URL{
 				Hostname:   "vpn.example.com",
 				Addresses:  []M.Socksaddr{{Addr: netip.MustParseAddr("1.2.3.4"), Port: 443}},
 				Username:   "alice",
 				Password:   "secret",
-				TLSProfile: profile,
+				TLSProfile: common.Ptr(tc.profile),
 			}
 
 			link, err := original.Build()
 			require.NoError(t, err)
 
 			payload := decodeTLVPayload(t, link)
-			require.Equal(t, [][]byte{[]byte(profile)}, decodeTLVValues(t, payload, TagTLSProfile))
+			require.Equal(t, [][]byte{{tc.wire}}, decodeTLVValues(t, payload, TagTLSProfile))
 
 			parsed, err := Parse(link)
 			require.NoError(t, err)
-			require.Equal(t, profile, parsed.TLSProfile)
+			require.Equal(t, original.TLSProfile, parsed.TLSProfile)
 		})
 	}
 }
 
-func TestBuild_TLSProfileOmittedWhenEmpty(t *testing.T) {
+func TestBuild_TLSProfileOmittedWhenUnset(t *testing.T) {
 	t.Parallel()
 	original := URL{
 		Hostname:  "vpn.example.com",
@@ -1049,7 +1061,41 @@ func TestBuild_TLSProfileOmittedWhenEmpty(t *testing.T) {
 
 	parsed, err := Parse(link)
 	require.NoError(t, err)
-	require.Empty(t, parsed.TLSProfile)
+	require.Nil(t, parsed.TLSProfile)
+}
+
+func TestParse_InvalidTLSProfile(t *testing.T) {
+	t.Parallel()
+	link, err := (URL{SubscriptionURL: testSubscriptionURL}).Build()
+	require.NoError(t, err)
+	payload := decodeTLVPayload(t, link)
+	testCases := []struct {
+		name  string
+		value []byte
+	}{
+		{"empty", nil},
+		{"multiple bytes", []byte{0x00, 0x01}},
+		{"withdrawn string format", []byte("firefox")},
+		{"unknown identifier", []byte{0x07}},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			builder := bytes.NewBuffer(bytes.Clone(payload))
+			require.NoError(t, writeTLV(builder, TagTLSProfile, tc.value))
+			_, err := Parse(Schema + "://?" + base64.RawURLEncoding.EncodeToString(builder.Bytes()))
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestBuild_InvalidTLSProfile(t *testing.T) {
+	t.Parallel()
+	_, err := (URL{
+		SubscriptionURL: testSubscriptionURL,
+		TLSProfile:      common.Ptr(TLSProfile(0x07)),
+	}).Build()
+	require.Error(t, err)
 }
 
 func TestParse_ClientRandomAuthKeyEmptyIsAllowed(t *testing.T) {
