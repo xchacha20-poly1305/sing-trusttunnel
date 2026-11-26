@@ -783,7 +783,7 @@ func TestBuild_VersionRaisedByFeatures(t *testing.T) {
 		{name: "dns upstreams", modify: func(u *URL) { u.DNSUpstreams = []string{"1.1.1.1"} }, version: Version1},
 		{name: "subscription url", modify: func(u *URL) { u.SubscriptionURL = testSubscriptionURL }, version: Version2},
 		{name: "subscription url with name", modify: func(u *URL) { u.Name = "Acme VPN"; u.SubscriptionURL = testSubscriptionURL }, version: Version2},
-		{name: "tls profile", modify: func(u *URL) { u.TLSProfile = common.Ptr(TLSProfileChrome) }, version: Version2},
+		{name: "tls profile", modify: func(u *URL) { u.TLSProfile = new(TLSProfileChrome) }, version: Version2},
 		{name: "explicit version kept", modify: func(u *URL) { u.Version = Version2 }, version: Version2},
 		{name: "explicit version raised", modify: func(u *URL) { u.Version = Version1; u.SubscriptionURL = testSubscriptionURL }, version: Version2},
 	}
@@ -1030,7 +1030,7 @@ func TestRoundTrip_TLSProfile(t *testing.T) {
 				Addresses:  []M.Socksaddr{{Addr: netip.MustParseAddr("1.2.3.4"), Port: 443}},
 				Username:   "alice",
 				Password:   "secret",
-				TLSProfile: common.Ptr(tc.profile),
+				TLSProfile: new(tc.profile),
 			}
 
 			link, err := original.Build()
@@ -1093,7 +1093,7 @@ func TestBuild_InvalidTLSProfile(t *testing.T) {
 	t.Parallel()
 	_, err := (URL{
 		SubscriptionURL: testSubscriptionURL,
-		TLSProfile:      common.Ptr(TLSProfile(0x07)),
+		TLSProfile:      new(TLSProfile(0x07)),
 	}).Build()
 	require.Error(t, err)
 }
